@@ -1,0 +1,17 @@
+{
+  "app_id": "golang",
+  "name": "Go Programming Language",
+  "comment": "The Go programming language compiler and tools",
+  "default_install_dir": "/opt/go",
+  "binary_pattern": "go",
+  "binary_path": "bin/go",
+  "symlink_as": "go",
+  "cli_only": true,
+  "categories": "Development;",
+  "exec_flags": "",
+  "source": {
+    "type": "api",
+    "endpoint": "https://go.dev/dl/?mode=json",
+    "jq_query": ".[0].files[] | select(.os==\"linux\" and .arch==\"amd64\") | \"https://go.dev/dl/\\(.filename)\""
+  }
+}

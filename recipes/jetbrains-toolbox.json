@@ -1,0 +1,9 @@
+{
+  "app_id": "jetbrains-toolbox",
+  "name": "JetBrains Toolbox",
+  "comment": "JetBrains tools manager",
+  "default_install_dir": "/opt/jetbrains-toolbox",
+  "binary_pattern": "jetbrains-toolbox",
+  "symlink_as": "jetbrains-toolbox",
+  "categories": "Development;IDE;"
+}

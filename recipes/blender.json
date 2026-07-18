@@ -1,0 +1,9 @@
+{
+  "app_id": "blender",
+  "name": "Blender",
+  "comment": "Free and open source 3D creation suite",
+  "default_install_dir": "/opt/blender",
+  "binary_pattern": "blender",
+  "symlink_as": "blender",
+  "categories": "Graphics;3DGraphics;"
+}

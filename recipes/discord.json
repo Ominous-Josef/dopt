@@ -1,0 +1,12 @@
+{
+    "app_id": "discord",
+    "name": "Discord",
+    "comment": "All-in-one voice and text chat for gamers",
+    "default_install_dir": "/opt/discord",
+    "binary_pattern": "Discord",
+    "symlink_as": "discord",
+    "categories": "Network;InstantMessaging;Chat;",
+    "exec_flags": "",
+    "default_url_x64": "https://discord.com/api/download?platform=linux&format=tar.gz",
+    "default_url_arm64": ""
+}

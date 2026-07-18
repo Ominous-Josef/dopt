@@ -1,0 +1,12 @@
+{
+    "app_id": "antigravity-ide",
+    "name": "Antigravity IDE",
+    "comment": "Google Next-Gen Intelligence IDE Workspace",
+    "default_install_dir": "/opt/antigravity-ide",
+    "binary_pattern": "*antigravity*",
+    "symlink_as": "antigravity-ide",
+    "categories": "Development;IDE;TextEditor;",
+    "exec_flags": "--no-sandbox",
+    "default_url_x64": "https://antigravity.google/download/antigravity-ide-linux-x64.tar.gz",
+    "default_url_arm64": "https://antigravity.google/download/antigravity-ide-linux-arm64.tar.gz"
+}

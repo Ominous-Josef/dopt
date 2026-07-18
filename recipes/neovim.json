@@ -1,0 +1,16 @@
+{
+  "app_id": "neovim",
+  "name": "Neovim",
+  "comment": "Vim-fork focused on extensibility and usability",
+  "default_install_dir": "/opt/neovim",
+  "binary_pattern": "nvim",
+  "symlink_as": "nvim",
+  "categories": "Utility;TextEditor;Development;",
+  "exec_flags": "",
+  "source": {
+    "type": "github",
+    "repository": "neovim/neovim",
+    "asset_pattern_x64": "linux-x86_64.tar.gz",
+    "asset_pattern_arm64": "linux-arm64.tar.gz"
+  }
+}

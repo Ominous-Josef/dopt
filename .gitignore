@@ -1,0 +1,28 @@
+# Binaries for programs and plugins
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+
+# Built dopt executable
+dopt
+dopt-go
+
+# Test binary, built with `go test -c`
+*.test
+
+# Output of the go coverage tool
+*.out
+
+# Local archives downloaded/used by dopt
+*.tar.gz
+*.tar.xz
+*.zip
+*.bz2
+
+# IDEs and OS files
+.idea/
+.vscode/
+*.swp
+.DS_Store
