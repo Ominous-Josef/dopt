@@ -1,0 +1,16 @@
+{
+  "schema": 2,
+  "app_id": "jq",
+  "name": "jq",
+  "comment": "Command-line JSON processor",
+  "binary_pattern": "jq",
+  "symlink_as": "jq",
+  "cli_only": true,
+  "categories": "Development;",
+  "source": {
+    "type": "github",
+    "repository": "jqlang/jq",
+    "asset_pattern_x64": "jq-linux-amd64",
+    "asset_pattern_arm64": "jq-linux-arm64"
+  }
+}

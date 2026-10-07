@@ -318,3 +318,27 @@ func TestKeepZip(t *testing.T) {
 		t.Errorf("Keep zip = %s, %v", got, err)
 	}
 }
+
+func TestNamedURL(t *testing.T) {
+	if got := NamedURL("https://discord.com/api/download?platform=linux", "https://cdn/apps/discord-1.0.161.tar.gz"); got != "https://cdn/apps/discord-1.0.161.tar.gz" {
+		t.Errorf("unnamed request: %s", got)
+	}
+	if got := NamedURL("https://gh/v1/tool.tar.gz", "https://cdn/obj?sig=1"); got != "https://gh/v1/tool.tar.gz" {
+		t.Errorf("named request: %s", got)
+	}
+}
+
+func TestResolveGitHubBareBinary(t *testing.T) {
+	release := []byte(`{"tag_name":"jq-1.8.1","assets":[
+		{"name":"jq-linux-amd64.sha256","browser_download_url":"https://x/sum"},
+		{"name":"jq-linux-amd64","browser_download_url":"https://x/jq"},
+		{"name":"sha256sum.txt","browser_download_url":"https://x/sums"}]}`)
+	srv := serve(t, map[string][]byte{"/repos/jqlang/jq/releases/latest": release})
+	old := GitHubAPI
+	GitHubAPI = srv.URL
+	t.Cleanup(func() { GitHubAPI = old })
+	r, err := Resolve(context.Background(), manifest.Manifest{Source: &manifest.Source{Type: "github", Repository: "jqlang/jq", AssetPatternX64: "jq-linux-amd64"}}, "x64")
+	if err != nil || r.URL != "https://x/jq" {
+		t.Errorf("bare binary asset = %+v, %v", r, err)
+	}
+}

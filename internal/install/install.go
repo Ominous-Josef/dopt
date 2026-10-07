@@ -788,7 +788,7 @@ func (r *run) keep() (string, error) {
 	if r.env.AsRoot {
 		uid, gid = r.env.User.UID, r.env.User.GID
 	}
-	saved, err := source.Keep(r.tarball, r.url, r.m.AppID, r.env.Cwd, uid, gid)
+	saved, err := source.Keep(r.tarball, source.NamedURL(r.url, r.fetched.FinalURL), r.m.AppID, r.env.Cwd, uid, gid)
 	if err == nil {
 		r.kept = true
 	}

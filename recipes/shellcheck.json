@@ -1,0 +1,16 @@
+{
+  "schema": 2,
+  "app_id": "shellcheck",
+  "name": "ShellCheck",
+  "comment": "Static analysis tool for shell scripts",
+  "binary_pattern": "shellcheck",
+  "symlink_as": "shellcheck",
+  "cli_only": true,
+  "categories": "Development;",
+  "source": {
+    "type": "github",
+    "repository": "koalaman/shellcheck",
+    "asset_pattern_x64": "linux.x86_64.tar.xz",
+    "asset_pattern_arm64": "linux.aarch64.tar.xz"
+  }
+}

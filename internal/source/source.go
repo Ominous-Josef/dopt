@@ -174,7 +174,7 @@ func resolveGitHub(ctx context.Context, s *manifest.Source, arch string) (Resolv
 		pattern = s.AssetPatternArm64
 	}
 	for _, a := range rel.Assets {
-		if pattern != "" && matchAsset(pattern, a.Name) && archive.HasArchiveExt(a.Name) {
+		if pattern != "" && matchAsset(pattern, a.Name) && !isSidecar(a.Name) {
 			return found(a.URL)
 		}
 	}
@@ -198,6 +198,17 @@ func resolveGitHub(ctx context.Context, s *manifest.Source, arch string) (Resolv
 		pattern = "(automatic)"
 	}
 	return Resolved{}, fmt.Errorf("no asset in %s %s matches %q for %s (assets: %s)", s.Repository, rel.TagName, pattern, arch, strings.Join(names, ", "))
+}
+
+// isSidecar reports release files that accompany a download (checksums, signatures, notes).
+func isSidecar(name string) bool {
+	lower := strings.ToLower(name)
+	for _, ext := range []string{".sha256", ".sha256sum", ".sha512", ".sha512sum", ".md5", ".asc", ".sig", ".minisig", ".pem", ".sbom", ".spdx", ".json", ".txt", ".zsync"} {
+		if strings.HasSuffix(lower, ext) {
+			return true
+		}
+	}
+	return strings.Contains(lower, "checksum") || strings.Contains(lower, "sha256sums")
 }
 
 // matchAsset treats patterns with glob characters as globs and others as substrings.
@@ -429,6 +440,15 @@ func SaveName(rawURL, appID, ext string) string {
 		return appID + "-linux" + ext
 	}
 	return name
+}
+
+// NamedURL picks which URL to name a kept download after: the requested one if
+// its path ends in a usable file name, else the URL it redirected to.
+func NamedURL(requested, final string) string {
+	if final == "" || SaveName(requested, "", "") != "-linux" {
+		return requested
+	}
+	return final
 }
 
 // splitExt splits name into stem and a known extension (".tar.gz", ".zip", ...).

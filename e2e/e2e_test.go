@@ -15,6 +15,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 )
@@ -310,4 +311,60 @@ func TestListAndRemove(t *testing.T) {
 	s.run("y\n", "remove", appID)
 	s.check("remove", s.code == 0 && !exists(s.opt(appID)) && !exists(filepath.Join(s.root, "bin", "dselftest")) &&
 		!exists(filepath.Join(s.root, "applications", appID+".desktop")))
+}
+
+func TestOutdatedAndUpdate(t *testing.T) {
+	s := newSandbox(t)
+	var mu sync.Mutex
+	current := "app-1.0.tar.gz"
+	files := map[string]string{"app-1.0.tar.gz": s.pkg("app-1.0.tar.gz", "v1", "wrap")}
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		defer mu.Unlock()
+		if r.URL.Path == "/latest" {
+			http.Redirect(w, r, "/files/"+current, http.StatusFound)
+			return
+		}
+		if p, ok := files[strings.TrimPrefix(r.URL.Path, "/files/")]; ok {
+			http.ServeFile(w, r, p)
+			return
+		}
+		http.NotFound(w, r)
+	}))
+	defer srv.Close()
+
+	m := filepath.Join(s.dir, "m.json")
+	os.WriteFile(m, []byte(`{"schema":2,"app_id":"`+appID+`","name":"Dopt Selftest","binary_path":"bin/dselftest","symlink_as":"dselftest","cli_only":true,
+		"default_url_x64":"`+srv.URL+`/latest","default_url_arm64":"`+srv.URL+`/latest"}`), 0o644)
+	s.run("y\n", "install", "-m", m, "-d", "-c")
+	s.check("install from the vendor", s.code == 0 && s.version() == "v1" && s.has("Version    1.0"))
+	// Local installs have nothing to check: they show up as "can't update".
+	os.Remove(m)
+
+	s.run("", "outdated")
+	s.check("up to date", s.code == 0 && s.has("up to date") && !s.has("update available"))
+
+	mu.Lock()
+	current = "app-1.1.tar.gz"
+	files[current] = s.pkg("app-1.1.tar.gz", "v2", "wrap")
+	mu.Unlock()
+
+	s.run("", "outdated")
+	s.check("new release detected", s.code == 0 && s.has("update available") && s.has("1.1"))
+
+	s.run("n\n", "update", "--all")
+	s.check("declining updates nothing", s.code == 0 && s.version() == "v1")
+
+	s.run("y\n", "update", "--all")
+	s.check("update --all installs it", s.code == 0 && s.version() == "v2" && s.has("1.0 -> 1.1") && s.has("Updated 1 of 1"))
+	entries, _ := os.ReadDir(s.cwd)
+	s.check("updates don't keep downloads by default", len(entries) == 0)
+
+	s.run("", "update", appID)
+	s.check("named app already current", s.code == 0 && s.has("is up to date (1.1)"))
+
+	s.run("", "update")
+	s.check("update needs names or --all", s.code == 2)
+	s.run("", "update", "not.installed")
+	s.check("unknown app", s.code == 1 && s.has("isn't installed by dopt"))
 }

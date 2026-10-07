@@ -129,11 +129,20 @@ func runInstall(o InstallOptions, u *ui.UI) error {
 	}
 	req.Manifest = m
 
-	cwd, err := os.Getwd()
+	env, err := newEnv(l, usr, euid, u)
 	if err != nil {
 		return err
 	}
-	env := install.Env{
+	return install.Run(context.Background(), env, req)
+}
+
+// newEnv is the install environment for this process.
+func newEnv(l layout.Layout, usr sysuser.User, euid int, u *ui.UI) (install.Env, error) {
+	cwd, err := os.Getwd()
+	if err != nil {
+		return install.Env{}, err
+	}
+	return install.Env{
 		Layout:       l,
 		User:         usr,
 		AsRoot:       euid == 0,
@@ -142,6 +151,5 @@ func runInstall(o InstallOptions, u *ui.UI) error {
 		Cwd:          cwd,
 		PathEnv:      os.Getenv("PATH"),
 		ShowProgress: ui.IsTerminal(os.Stderr),
-	}
-	return install.Run(context.Background(), env, req)
+	}, nil
 }

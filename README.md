@@ -1,6 +1,6 @@
 # dopt (Directory Optional Package Manager)
 
-A manifest-driven package engine written in **Go** that installs, updates and desktop-integrates standalone Linux app archives cleanly into an `opt` folder.
+A manifest-driven package engine written in **Go** that installs, updates and desktop-integrates standalone Linux apps (tarballs, zips, AppImages and single binaries) cleanly into an `opt` folder.
 
 [![License: GPL v3](https://img.shields.io/badge/License-GPLv3-blue.svg)](https://www.gnu.org/licenses/gpl-3.0)
 
@@ -8,7 +8,7 @@ A manifest-driven package engine written in **Go** that installs, updates and de
 
 ## Why dopt?
 
-Many good Linux applications and developer toolchains (Discord, Blender, Go, Neovim, JetBrains Toolbox, …) ship as standalone `.tar.gz` archives that no package manager tracks. Managing them by hand is a repetitive chore:
+Many good Linux applications and developer toolchains (Discord, Blender, Go, Neovim, JetBrains Toolbox, …) ship as standalone archives (`.tar.gz`, `.tar.xz`, `.zip`, AppImages or a single binary) that no package manager tracks. Managing them by hand is a repetitive chore:
 * Unpacking them into random directories.
 * Chasing down nested executable paths.
 * Writing `.desktop` launchers so they appear in your app grid.
@@ -26,6 +26,8 @@ Many good Linux applications and developer toolchains (Discord, Blender, Go, Neo
   - dopt keeps a registry of its installs.
   - Folders owned by an RPM or deb package are refused.
   - Unknown folders and command names that already exist are never overwritten without asking.
+* **Many formats.** `.tar.gz`, `.tar.xz`, `.tar.bz2`, `.tar.zst`, `.zip`, AppImages and single Linux binaries (optionally compressed). The format is detected from the file itself, so oddly named downloads still work.
+* **Update checks.** `dopt outdated` checks every installed app against its source without downloading anything, and `dopt update --all` installs the new releases.
 * **Smart download URLs.** A recipe can find the latest release itself, from GitHub Releases or any JSON API (using jq queries), for x86_64 and aarch64.
 * **Safe extraction.** Archive entries can't write outside the install folder, setuid bits are dropped, and hard links and symlinks are handled.
 * **Running apps.** Running instances are found and stopped before an update, then relaunched as you, with your Wayland or X11 session.
@@ -33,7 +35,7 @@ Many good Linux applications and developer toolchains (Discord, Blender, Go, Neo
 * **Checksums.** `--sha256` verifies an archive before anything is installed.
 * **Interactive mode.** No recipe? dopt asks for the details, pre-filled from the existing install when you update.
 * **Manage what you installed.** `dopt list` and `dopt remove`.
-* **Single static binary.** It doesn't need `curl`, `tar` or `jq`.
+* **Single static binary.** It doesn't need `curl`, `tar`, `xz`, `unzip` or `jq`.
 
 ---
 
@@ -52,11 +54,14 @@ Then move `dopt` somewhere on your `PATH`, for example `~/.local/bin`.
 ## Usage
 
 ```text
-dopt install [options]      Install or update an app (same App ID = update)
-dopt list [-g]              List installed apps
-dopt remove [-g] [-i] <id>  Uninstall an app installed by dopt
-dopt version                Show the dopt version
-dopt help                   Show help
+dopt install [options]         Install or update an app (same App ID = update)
+dopt list [-g]                 List installed apps
+dopt outdated [-g] [<id>...]   Check installed apps for new releases
+dopt update [-g] [-i] [-k] (--all | <id>...)
+                               Install new releases (-k keeps the downloads)
+dopt remove [-g] [-i] <id>     Uninstall an app installed by dopt
+dopt version                   Show the dopt version
+dopt help                      Show help
 ```
 
 ### Install options
@@ -109,13 +114,39 @@ The dopt 2.x form without a subcommand (`dopt -m recipe.json -d`) still works an
 
 5. **Pick from your recent downloads:** run `dopt install -m recipe.json` with no source. dopt lists the newest archives in your Downloads folder.
 
-6. **Uninstall:**
+6. **Update everything:**
+   ```bash
+   dopt outdated
+   dopt update --all
+   ```
+
+7. **Uninstall:**
    ```bash
    dopt list
    dopt remove neovim
    ```
 
 ---
+
+## Keeping apps up to date
+
+Every install saves the recipe it used (`<opt dir>/.dopt/recipes/<app_id>.json`) and records which release it downloaded. A download from `-u <url>` is saved as the recipe's fixed URL, so it can be checked later too.
+
+```console
+$ dopt outdated
+  APP ID       INSTALLED   AVAILABLE   STATUS
+  jq           jq-1.8.2    jq-1.8.2    up to date
+  neovim       v0.12.4     v0.12.5     update available
+  shellcheck   v0.11.0     v0.11.0     up to date
+```
+
+`dopt outdated` resolves each app's download again (GitHub release, API query or fixed URL) and asks the server what it serves now, without downloading it. A release is recognized by a version in its URL, including after redirects (for example Discord's fixed link redirects to a versioned file). When there's no version, dopt uses the server's `ETag`, or else `Last-Modified` and the size.
+
+`dopt update --all` installs every available update through the normal install steps, so each one is staged, swapped and rolled back on failure. It asks once before starting (skip with `-i`) and doesn't keep the downloads unless you pass `-k`. Use `dopt update <app_id>` to update specific apps. Named apps are updated even when dopt can't tell whether they're current.
+
+Some apps show "can't update":
+- **Installed from a local file:** there's no download source to check.
+- **Installed before dopt 3, or by dopt-bash:** there's no saved recipe. Install it once more with `-m <recipe>` or `-u <url>`, and it becomes updatable.
 
 ## Where things go
 
@@ -125,6 +156,7 @@ The dopt 2.x form without a subcommand (`dopt -m recipe.json -d`) still works an
 | Command link | `~/.local/bin/<symlink_as>` | `/usr/local/bin/<symlink_as>` |
 | Menu shortcut | `~/.local/share/applications/<app_id>.desktop` | `/usr/share/applications/<app_id>.desktop` |
 | Registry | `~/.local/opt/.dopt/<app_id>` | `/opt/.dopt/<app_id>` |
+| Saved recipe | `~/.local/opt/.dopt/recipes/<app_id>.json` | `/opt/.dopt/recipes/<app_id>.json` |
 
 If `~/.local/bin` isn't on your `PATH`, the summary after an install tells you.
 
@@ -185,7 +217,7 @@ A recipe is a JSON file. A recipe for a CLI toolchain that finds its latest vers
 | `name` | String | Display name. Defaults to `app_id`. |
 | `comment` | String | Short description for the launcher. |
 | `binary_path` | String | Exact path to the executable, relative to the app folder. If the archive has one top-level folder, paths are relative to that folder. Takes priority over `binary_pattern`. |
-| `binary_pattern` | String | File name or glob of the executable (case-insensitive), searched up to 3 levels deep; the shallowest match wins. One of `binary_path` and `binary_pattern` is required. |
+| `binary_pattern` | String | File name or glob of the executable (case-insensitive), searched up to 3 levels deep; the shallowest match wins. One of `binary_path` and `binary_pattern` is required. For an AppImage or single-binary download, a plain name here (or in `binary_path`) becomes the installed file's name. |
 | `icon_path` | String | Icon path relative to the app folder, or a file name to search for. Without it, dopt looks for a fitting icon. |
 | `cli_only` | Boolean | `true` for terminal apps: no launcher is created. The string `"true"` is also accepted. |
 | `symlink_as` | String | Command name to link. Defaults to `app_id`. Can be overridden with `-s`. |
@@ -226,9 +258,9 @@ The first string result is the URL.
 ```
 
 How the asset is chosen:
-- **Patterns** can be substrings or globs.
+- **Patterns** can be substrings or globs. With a pattern, any matching asset can be picked, including binaries with no extension (`jq-linux-amd64`). Checksum and signature files are skipped.
 - **`asset_pattern`** applies to both architectures.
-- **No pattern:** dopt picks a Linux `.tar.gz` whose name mentions the architecture.
+- **No pattern:** dopt picks a Linux download whose name mentions the architecture, preferring `.tar.gz`, then the other archive types.
 
 ---
 
@@ -252,10 +284,10 @@ DOPT_TEST_ROOT=$(mktemp -d) go run . install -m recipes/neovim.json -d
 | Package | Role |
 |---|---|
 | `internal/cli` | Subcommands, flags, the setup wizard, the source picker |
-| `internal/install` | The install/update pipeline, `remove` and `list` |
+| `internal/install` | The install/update pipeline, update checks, `remove` and `list` |
 | `internal/manifest` | Recipe schema, defaults and validation |
-| `internal/source` | URL resolution (api/github), downloads, checksums, keeping archives |
-| `internal/archive` | Safe extraction |
+| `internal/source` | URL resolution (api/github), downloads, release fingerprints, checksums, keeping archives |
+| `internal/archive` | Format detection and safe extraction (tar with any supported compression, zip, single files) |
 | `internal/registry` | The `.dopt` install registry |
 | `internal/layout` | Local, global and test-mode folders |
 | `internal/linker` | Command links and PATH checks |
@@ -267,7 +299,9 @@ DOPT_TEST_ROOT=$(mktemp -d) go run . install -m recipes/neovim.json -d
 
 ## Limitations
 
-- **Archive format:** only `.tar.gz` / `.tgz` for now.
+- **AppImages** are installed as they are. They need FUSE (`libfuse2`) to run, and dopt doesn't extract their icon, so the menu shortcut uses a generic one unless you set `icon_path`.
+- **Update checks** only work when the server says which release it serves. A fixed URL without a version, `ETag` or `Last-Modified` shows as "unknown"; `dopt update <app_id>` still reinstalls it.
+- **Installers** (`.run`, `.sh`, `.deb`, `.rpm`) aren't supported.
 - **Platform:** Linux on x86_64 or aarch64.
 - **Package detection:** only RPM and dpkg are checked. On other systems, an unregistered folder still gets the "Replace it?" prompt.
 

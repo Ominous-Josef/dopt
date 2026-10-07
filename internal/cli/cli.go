@@ -106,6 +106,10 @@ func run(args []string, u *ui.UI) error {
 			return err
 		}
 		return runInstall(opts, u)
+	case "outdated":
+		return runOutdated(rest, u)
+	case "update", "upgrade":
+		return runUpdate(rest, u)
 	case "list", "ls":
 		return runList(rest, u)
 	case "remove", "rm", "uninstall":
@@ -178,11 +182,14 @@ func printHelp(w io.Writer) {
 Installs and updates standalone Linux apps shipped as archives.
 
 Usage:
-  dopt install [options]      Install or update an app (same App ID = update)
-  dopt list [-g]              List installed apps
-  dopt remove [-g] [-i] <id>  Uninstall an app installed by dopt
-  dopt version                Show the dopt version
-  dopt help                   Show this help
+  dopt install [options]         Install or update an app (same App ID = update)
+  dopt list [-g]                 List installed apps
+  dopt outdated [-g] [<id>...]   Check installed apps for new releases
+  dopt update [-g] [-i] [-k] (--all | <id>...)
+                                 Install new releases (-k keeps the downloads)
+  dopt remove [-g] [-i] <id>     Uninstall an app installed by dopt
+  dopt version                   Show the dopt version
+  dopt help                      Show this help
 
 Install options:
   -m, --manifest <json>   The application manifest (recipe)
