@@ -6,9 +6,11 @@ import (
 	"flag"
 	"fmt"
 	"io"
-	"os"
 	"regexp"
 	"strings"
+
+	"github.com/Ominous-Josef/dopt/internal/install"
+	"github.com/Ominous-Josef/dopt/internal/ui"
 )
 
 // Version is the dopt release.
@@ -39,19 +41,41 @@ var sha256Pattern = regexp.MustCompile(`^[0-9a-f]{64}$`)
 
 // Run executes dopt with args (without the program name) and returns the exit code.
 func Run(args []string) int {
-	if err := run(args, os.Stdout); err != nil {
-		var ue usageError
-		if errors.As(err, &ue) {
-			fmt.Fprintf(os.Stderr, "[-] %s\n    Run 'dopt help' for usage.\n", ue.msg)
-			return 2
-		}
-		fmt.Fprintf(os.Stderr, "[-] %v\n", err)
-		return 1
-	}
-	return 0
+	u := ui.Std()
+	return report(u, run(args, u))
 }
 
-func run(args []string, out io.Writer) error {
+// report prints err and returns the exit code for it.
+func report(u *ui.UI, err error) int {
+	if err == nil {
+		return 0
+	}
+	var ue usageError
+	var ie *install.Error
+	switch {
+	case errors.As(err, &ue):
+		u.Error("%s", ue.msg)
+		u.Hint("Run 'dopt help' for usage.")
+		return 2
+	case errors.As(err, &ie):
+		if ie.Msg != "" {
+			u.Error("%s", ie.Msg)
+		}
+		for _, h := range ie.Hints {
+			u.Hint("  %s", h)
+		}
+		return ie.Code
+	case errors.Is(err, ui.ErrNoInput):
+		u.Error("Deployment aborted (no answer).")
+		return 1
+	}
+	msg := err.Error()
+	u.Error("%s", strings.ToUpper(msg[:1])+msg[1:]+".")
+	return 1
+}
+
+func run(args []string, u *ui.UI) error {
+	out := u.Out
 	if len(args) == 0 {
 		printHelp(out)
 		return nil
@@ -79,7 +103,7 @@ func run(args []string, out io.Writer) error {
 		if err != nil {
 			return err
 		}
-		return runInstall(opts)
+		return runInstall(opts, u)
 	case "version":
 		fmt.Fprintf(out, "dopt %s\n", Version)
 		return nil

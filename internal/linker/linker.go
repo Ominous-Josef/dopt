@@ -46,12 +46,12 @@ func Inspect(link, installDir string) State {
 
 // PathInside reports whether p resolves (as far as it exists) to a path inside dir.
 func PathInside(p, dir string) bool {
-	rp, rd := resolve(p), resolve(dir)
+	rp, rd := Resolve(p), Resolve(dir)
 	return strings.HasPrefix(rp, rd+string(filepath.Separator))
 }
 
-// resolve is `readlink -m`: resolve symlinks in the existing part of the path, keep the rest.
-func resolve(p string) string {
+// Resolve is `readlink -m`: resolve symlinks in the existing part of the path, keep the rest.
+func Resolve(p string) string {
 	p = filepath.Clean(p)
 	if r, err := filepath.EvalSymlinks(p); err == nil {
 		return r
@@ -60,7 +60,7 @@ func resolve(p string) string {
 	if parent == p {
 		return p
 	}
-	return filepath.Join(resolve(parent), filepath.Base(p))
+	return filepath.Join(Resolve(parent), filepath.Base(p))
 }
 
 // Link points link at target, replacing an existing link atomically.

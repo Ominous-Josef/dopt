@@ -5,6 +5,9 @@ import (
 	"flag"
 	"strings"
 	"testing"
+
+	"github.com/Ominous-Josef/dopt/internal/install"
+	"github.com/Ominous-Josef/dopt/internal/ui"
 )
 
 func TestParseInstallAliases(t *testing.T) {
@@ -62,16 +65,38 @@ func TestParseInstallErrors(t *testing.T) {
 }
 
 func TestRunDispatch(t *testing.T) {
-	var out strings.Builder
-	if err := run([]string{"version"}, &out); err != nil || !strings.Contains(out.String(), Version) {
+	var out, errb strings.Builder
+	u := ui.New(strings.NewReader(""), &out, &errb, false, false)
+	if err := run([]string{"version"}, u); err != nil || !strings.Contains(out.String(), Version) {
 		t.Errorf("version: %q, %v", out.String(), err)
 	}
 	out.Reset()
-	if err := run([]string{"--version"}, &out); err != nil || !strings.Contains(out.String(), Version) {
+	if err := run([]string{"--version"}, u); err != nil || !strings.Contains(out.String(), Version) {
 		t.Errorf("--version: %q, %v", out.String(), err)
 	}
 	var ue usageError
-	if err := run([]string{"frobnicate"}, &out); !errors.As(err, &ue) {
+	if err := run([]string{"frobnicate"}, u); !errors.As(err, &ue) {
 		t.Errorf("unknown command: %v", err)
+	}
+}
+
+func TestReport(t *testing.T) {
+	var out, errb strings.Builder
+	u := ui.New(strings.NewReader(""), &out, &errb, false, false)
+	if code := report(u, &install.Error{Msg: "Owned.", Hints: []string{"remove it"}, Code: 1}); code != 1 {
+		t.Errorf("code = %d", code)
+	}
+	if code := report(u, &install.Error{Code: 0}); code != 0 {
+		t.Errorf("stopped code = %d", code)
+	}
+	if code := report(u, usagef("bad flag")); code != 2 {
+		t.Errorf("usage code = %d", code)
+	}
+	if code := report(u, errors.New("archive not found: x")); code != 1 {
+		t.Errorf("plain code = %d", code)
+	}
+	want := "[-] Owned.\n      remove it\n[-] bad flag\n    Run 'dopt help' for usage.\n[-] Archive not found: x.\n"
+	if errb.String() != want {
+		t.Errorf("stderr = %q, want %q", errb.String(), want)
 	}
 }
