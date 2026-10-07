@@ -46,7 +46,10 @@ func Remove(env Env, appID string, force bool) error {
 	}
 
 	links := ourLinks(l, appID)
-	name := desktopName(l.DesktopFile(appID))
+	name := entry[registry.KeyName]
+	if name == "" {
+		name = desktopName(l.DesktopFile(appID))
+	}
 	if name == "" {
 		name = appID
 	}
@@ -196,6 +199,9 @@ func List(l layout.Layout) []App {
 		a := App{ID: id, Registered: true, Name: desktopName(l.DesktopFile(id))}
 		e, _ := registry.Read(l.RegistryDir, id)
 		a.Command = e[registry.KeyCommand]
+		if a.Name == "" {
+			a.Name = e[registry.KeyName]
+		}
 		if t, err := time.Parse(time.RFC3339, e[registry.KeyInstalled]); err == nil {
 			a.Installed = t
 		}

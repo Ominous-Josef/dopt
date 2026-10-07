@@ -575,6 +575,7 @@ func (r *run) install(binaryRel string) (restart bool, err error) {
 	entry := registry.Entry{
 		registry.KeyAppID:     m.AppID,
 		registry.KeyInstalled: r.env.Now().Format(time.RFC3339),
+		registry.KeyName:      desktop.Text(m.Name),
 		registry.KeyBinary:    binaryRel,
 		registry.KeyCommand:   m.SymlinkAs,
 	}

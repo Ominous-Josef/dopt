@@ -1,9 +1,14 @@
 {
+  "schema": 2,
   "app_id": "jetbrains-toolbox",
   "name": "JetBrains Toolbox",
   "comment": "JetBrains tools manager",
-  "default_install_dir": "/opt/jetbrains-toolbox",
   "binary_pattern": "jetbrains-toolbox",
   "symlink_as": "jetbrains-toolbox",
-  "categories": "Development;IDE;"
+  "categories": "Development;IDE;",
+  "source": {
+    "type": "api",
+    "endpoint": "https://data.services.jetbrains.com/products/releases?code=TBA&latest=true&type=release",
+    "jq_query": ".TBA[0].downloads | if $arch == \"arm64\" then .linuxARM64 else .linux end | .link"
+  }
 }

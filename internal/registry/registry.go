@@ -24,6 +24,7 @@ const (
 	KeyAppID     = "app_id"
 	KeyFolderID  = "folder_id"
 	KeyInstalled = "installed"
+	KeyName      = "name"    // display name
 	KeyBinary    = "binary"  // binary path relative to the install folder
 	KeyCommand   = "command" // command link name
 	KeySource    = "source"  // download URL or local archive path
