@@ -26,13 +26,14 @@ const (
 	KeyAppID     = "app_id"
 	KeyFolderID  = "folder_id"
 	KeyInstalled = "installed"
-	KeyName      = "name"    // display name
-	KeyBinary    = "binary"  // binary path relative to the install folder
-	KeyCommand   = "command" // command link name
-	KeySource    = "source"  // download URL or local archive path
-	KeyVersion   = "version" // release name, when known
-	KeyRelease   = "release" // fingerprint of the downloaded release (see source.Fingerprint)
-	KeyFormat    = "format"  // download format, e.g. "tar.xz"
+	KeyName      = "name"     // display name
+	KeyBinary    = "binary"   // binary path relative to the install folder
+	KeyCommand   = "command"  // command link name
+	KeyCommands  = "commands" // every command link name, comma-separated (main first)
+	KeySource    = "source"   // download URL or local archive path
+	KeyVersion   = "version"  // release name, when known
+	KeyRelease   = "release"  // fingerprint of the downloaded release (see source.Fingerprint)
+	KeyFormat    = "format"   // download format, e.g. "tar.xz"
 )
 
 // FolderIdentity is the folder's inode and birth time ("ino:btime", as `stat -c '%i:%W'`).

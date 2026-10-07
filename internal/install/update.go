@@ -116,7 +116,7 @@ func UpdateRequest(l layout.Layout, st Status) Request {
 		ManifestPath: registry.RecipePath(l.RegistryDir, st.AppID),
 		Download:     true,
 		URL:          resolved.URL,
-		Version:      resolved.Version,
+		Resolved:     resolved,
 		Batch:        true,
 	}
 }

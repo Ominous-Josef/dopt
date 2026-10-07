@@ -1,0 +1,17 @@
+{
+  "schema": 2,
+  "app_id": "glab",
+  "name": "GitLab CLI",
+  "comment": "Work with GitLab from the command line",
+  "binary_pattern": "glab",
+  "symlink_as": "glab",
+  "cli_only": true,
+  "categories": "Development;",
+  "source": {
+    "type": "gitlab",
+    "repository": "gitlab-org/cli",
+    "asset_pattern_x64": "linux_amd64.tar.gz",
+    "asset_pattern_arm64": "linux_arm64.tar.gz",
+    "checksums": "checksums.txt"
+  }
+}

@@ -17,6 +17,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -64,7 +65,7 @@ type Request struct {
 	Download bool                                           // fetch the archive
 	URL      string                                         // download URL, or "" to call Resolve
 	Resolve  func(context.Context) (source.Resolved, error) // finds the URL from the manifest
-	Version  string                                         // release name already known for URL (e.g. a GitHub tag)
+	Resolved source.Resolved                                // what Resolve found, when done before the run (dopt update)
 	SHA256   string                                         // expected checksum (lowercase hex), optional
 
 	Cleanup        bool // delete the archive after a successful install
@@ -127,6 +128,10 @@ type run struct {
 	fetched    source.Fetched // what the download URL served
 	version    string         // release name, when known
 	format     archive.Format
+	resolved   source.Resolved // where the download came from: version and published checksum
+	sha256     string          // checksum to verify the download against
+	shaOrigin  string          // where sha256 came from, for messages
+	extras     []extraCommand  // commands besides the main one
 	kept       bool
 	swapping   bool // the live folder may be moved aside: restore it on failure
 	renamed    bool
@@ -241,6 +246,9 @@ func (r *run) check(wasInstalled bool) error {
 	if err := r.chooseCommand(); err != nil {
 		return err
 	}
+	if err := r.chooseExtraCommands(); err != nil {
+		return err
+	}
 	if !m.CliOnly {
 		if _, err := desktop.ExecPath(r.binLink); err != nil {
 			return fail(err.Error())
@@ -346,6 +354,58 @@ func (r *run) sameApp(path string) bool {
 	return false
 }
 
+// chooseExtraCommands applies the command-name rules to the manifest's extra
+// commands. A clash can't be renamed away: the command is skipped (or, with -i, the install stops).
+func (r *run) chooseExtraCommands() error {
+	u, m := r.u, r.m
+	r.extras = nil
+	for _, c := range m.Binaries {
+		name := c.Name()
+		link := filepath.Join(r.l.BinDir, name)
+		if name == m.SymlinkAs {
+			u.Warn("The extra command '%s' has the same name as the main command; it won't be linked.", name)
+			continue
+		}
+		skip := false
+		if linker.Inspect(link, r.inst) == linker.Foreign {
+			u.Warn("%s already exists and wasn't installed by dopt for %s.", u.Path(link), m.AppID)
+			if r.req.Force {
+				return r.nameClashAbort()
+			}
+			fmt.Fprintf(u.Out, "    1) Don't link '%s'\n", name)
+			fmt.Fprintln(u.Out, "    2) Abort")
+			choice, err := u.AskDefault("1", "Choose an action [1-2] (default 1): ")
+			if err != nil || strings.TrimSpace(choice) != "1" {
+				return fail("Deployment aborted.")
+			}
+			skip = true
+		} else if existing := r.env.Lookup(name); strings.HasPrefix(existing, "/") && existing != link && !r.sameApp(existing) {
+			u.Warn("The command '%s' already exists at %s and wasn't installed by dopt.", name, u.Path(existing))
+			if r.req.Force {
+				return r.nameClashAbort()
+			}
+			fmt.Fprintf(u.Out, "    1) Don't link '%s'\n", name)
+			fmt.Fprintf(u.Out, "    2) Link it anyway (which '%s' runs will depend on PATH order)\n", name)
+			fmt.Fprintln(u.Out, "    3) Abort")
+			choice, err := u.AskDefault("1", "Choose an action [1-3] (default 1): ")
+			if err != nil {
+				return fail("Deployment aborted.")
+			}
+			switch strings.TrimSpace(choice) {
+			case "1":
+				skip = true
+			case "2":
+			default:
+				return fail("Deployment aborted.")
+			}
+		}
+		if !skip {
+			r.extras = append(r.extras, extraCommand{cmd: c, link: link})
+		}
+	}
+	return nil
+}
+
 func (r *run) askNewName() error {
 	for {
 		name, err := r.u.Ask("Enter a different command name: ")
@@ -388,13 +448,12 @@ func (r *run) fetch() error {
 	}
 	u := r.u
 	u.Step("Downloading...")
-	r.url = r.req.URL
+	r.url, r.resolved = r.req.URL, r.req.Resolved
 	if r.url == "" && r.req.Resolve != nil {
-		resolved, err := r.req.Resolve(r.ctx)
-		if err != nil {
+		if r.resolved, err = r.req.Resolve(r.ctx); err != nil {
 			return fail(fmt.Sprintf("Couldn't find the download: %v", err))
 		}
-		r.url, r.req.Version = resolved.URL, resolved.Version
+		r.url = r.resolved.URL
 		u.Detail("From %s", redactURL(r.url))
 	}
 	if r.url == "" {
@@ -412,7 +471,7 @@ func (r *run) fetch() error {
 		}
 	}
 	r.fetched, err = source.Download(r.ctx, r.url, r.tarball, progress)
-	r.version = source.Version(source.Resolved{URL: r.url, Version: r.req.Version}, r.fetched)
+	r.version = source.Version(source.Resolved{URL: r.url, Version: r.resolved.Version}, r.fetched)
 	if r.env.ShowProgress {
 		fmt.Fprintln(u.Err)
 	}
@@ -420,6 +479,25 @@ func (r *run) fetch() error {
 		return fail(fmt.Sprintf("Download failed. Check the URL and your connection: %s", redactURL(r.url)), err.Error())
 	}
 	r.downloaded = true
+	return r.publishedChecksum()
+}
+
+// publishedChecksum picks the SHA-256 to verify: --sha256 if given, else the one
+// the source publishes. A checksum the recipe asked for must be found.
+func (r *run) publishedChecksum() error {
+	r.sha256, r.shaOrigin = r.req.SHA256, "--sha256"
+	if r.sha256 != "" || r.resolved.URL != r.url {
+		return nil
+	}
+	sum, err := source.Checksum(r.ctx, r.resolved)
+	switch {
+	case err != nil && r.resolved.ChecksumRequired:
+		return fail(fmt.Sprintf("Couldn't get the checksum to verify the download: %v", err))
+	case err != nil:
+		r.u.Warn("Couldn't read the published checksum (%v); continuing without it.", err)
+	case sum != "":
+		r.sha256, r.shaOrigin = sum, r.resolved.ChecksumOrigin
+	}
 	return nil
 }
 
@@ -428,20 +506,23 @@ func (r *run) fetch() error {
 func (r *run) unpack() (string, error) {
 	u, m := r.u, r.m
 	u.Step("Unpacking...")
-	if r.req.SHA256 != "" {
-		actual, err := source.VerifySHA256(r.tarball, r.req.SHA256)
+	if r.sha256 == "" && !r.req.Download {
+		r.sha256, r.shaOrigin = r.req.SHA256, "--sha256"
+	}
+	if r.sha256 != "" {
+		actual, err := source.VerifySHA256(r.tarball, r.sha256)
 		if errors.Is(err, source.ErrChecksum) {
 			// A mismatched download must never be kept or offered for resuming.
 			if r.downloaded {
 				os.Remove(r.tarball)
 			}
-			return "", fail("SHA-256 mismatch. The archive was not installed.",
-				"Expected: "+r.req.SHA256, "Actual:   "+actual)
+			return "", fail(fmt.Sprintf("SHA-256 mismatch: the download doesn't match %s. Nothing was installed.", r.shaOrigin),
+				"Expected: "+r.sha256, "Actual:   "+actual)
 		}
 		if err != nil {
 			return "", fail(fmt.Sprintf("Couldn't read the archive: %v", err))
 		}
-		u.Detail("SHA-256 verified")
+		u.Detail("SHA-256 verified (%s)", r.shaOrigin)
 	}
 
 	extracted := filepath.Join(r.work, "extract")
@@ -510,7 +591,39 @@ func (r *run) unpack() (string, error) {
 		return "", fail("Couldn't find the app's executable in the archive. Nothing was changed.")
 	}
 	rel, _ := filepath.Rel(r.stage, staged)
+	r.findExtras()
 	return rel, nil
+}
+
+// extraCommand is one of the manifest's extra commands, as it will be linked.
+type extraCommand struct {
+	cmd  manifest.Command
+	link string // bin/<name>
+	rel  string // binary path inside the install folder, once found
+}
+
+// findExtras locates the extra commands in the staged version; missing ones are skipped with a warning.
+func (r *run) findExtras() {
+	kept := r.extras[:0]
+	for _, x := range r.extras {
+		staged := ""
+		if x.cmd.Path != "" {
+			staged = filepath.Join(r.stage, x.cmd.Path)
+		} else {
+			staged = binfind.ByPattern(r.stage, x.cmd.Pattern)
+		}
+		if staged == "" || !binfind.Inside(staged, r.stage) {
+			want := x.cmd.Path
+			if want == "" {
+				want = x.cmd.Pattern
+			}
+			r.u.Warn("The command '%s' (%s) isn't in the archive; it won't be linked.", x.cmd.Name(), want)
+			continue
+		}
+		x.rel, _ = filepath.Rel(r.stage, staged)
+		kept = append(kept, x)
+	}
+	r.extras = kept
 }
 
 func (r *run) pickBinary() string {
@@ -586,9 +699,13 @@ func (r *run) install(binaryRel string) (restart bool, err error) {
 	if err := r.assertManaged(r.inst); err != nil {
 		return false, err
 	}
-	previous := r.previousCommand()
+	previous := r.previousCommands()
 	if err := r.swap(); err != nil {
 		return false, err
+	}
+	current := []string{m.SymlinkAs}
+	for _, x := range r.extras {
+		current = append(current, x.cmd.Name())
 	}
 
 	entry := registry.Entry{
@@ -598,6 +715,7 @@ func (r *run) install(binaryRel string) (restart bool, err error) {
 		registry.KeyFormat:    r.format.String(),
 		registry.KeyBinary:    binaryRel,
 		registry.KeyCommand:   m.SymlinkAs,
+		registry.KeyCommands:  strings.Join(current, ","),
 	}
 	if id, err := registry.FolderIdentity(r.inst); err == nil {
 		entry[registry.KeyFolderID] = id
@@ -620,17 +738,26 @@ func (r *run) install(binaryRel string) (restart bool, err error) {
 		u.Warn("Couldn't save the recipe for later updates: %v", err)
 	}
 
-	if previous != "" && previous != m.SymlinkAs {
-		if removed, _ := linker.RemoveIfOurs(filepath.Join(r.l.BinDir, previous), r.inst); removed {
-			u.Detail("Removed the old command link '%s'", previous)
+	for _, old := range previous {
+		if slices.Contains(current, old) {
+			continue
+		}
+		if removed, _ := linker.RemoveIfOurs(filepath.Join(r.l.BinDir, old), r.inst); removed {
+			u.Detail("Removed the old command link '%s'", old)
 		}
 	}
-	realBinary := filepath.Join(r.inst, binaryRel)
-	if info, err := os.Stat(realBinary); err == nil {
-		os.Chmod(realBinary, info.Mode().Perm()|0o111)
+	links := []struct{ rel, link string }{{binaryRel, r.binLink}}
+	for _, x := range r.extras {
+		links = append(links, struct{ rel, link string }{x.rel, x.link})
 	}
-	if err := linker.Link(realBinary, r.binLink); err != nil {
-		return false, fail(fmt.Sprintf("Couldn't create the command link %s: %v", r.binLink, err))
+	for _, l := range links {
+		target := filepath.Join(r.inst, l.rel)
+		if info, err := os.Stat(target); err == nil {
+			os.Chmod(target, info.Mode().Perm()|0o111)
+		}
+		if err := linker.Link(target, l.link); err != nil {
+			return false, fail(fmt.Sprintf("Couldn't create the command link %s: %v", l.link, err))
+		}
 	}
 	return restart, nil
 }
@@ -681,12 +808,20 @@ func singleFileName(m *manifest.Manifest) string {
 	return m.SymlinkAs
 }
 
-// previousCommand is the command link name of the existing install, if any.
-func (r *run) previousCommand() string {
-	if e, _ := registry.Read(r.l.RegistryDir, r.m.AppID); e[registry.KeyCommand] != "" {
-		return e[registry.KeyCommand]
+// previousCommands are the command links of the existing install: as recorded,
+// or (for installs that predate the record) the link found pointing into it.
+func (r *run) previousCommands() []string {
+	e, _ := registry.Read(r.l.RegistryDir, r.m.AppID)
+	if list := e[registry.KeyCommands]; list != "" {
+		return strings.Split(list, ",")
 	}
-	return ExistingLink(r.l, r.m.AppID)
+	if e[registry.KeyCommand] != "" {
+		return []string{e[registry.KeyCommand]}
+	}
+	if link := ExistingLink(r.l, r.m.AppID); link != "" {
+		return []string{link}
+	}
+	return nil
 }
 
 // ExistingLink returns the name of a command link in the bin folder that points into appID's install.
@@ -807,10 +942,14 @@ func (r *run) summary(wasInstalled bool, archiveNote string) {
 		u.Line("Version    %s", r.version)
 	}
 	u.Line("Location   %s  (%s)", u.Path(r.inst), humanSize(dirSize(r.inst)))
+	label, cmds := "Command ", m.SymlinkAs
+	for _, x := range r.extras {
+		label, cmds = "Commands", cmds+", "+x.cmd.Name()
+	}
 	if !r.l.Global && !linker.OnPath(r.l.BinDir, r.env.PathEnv) {
-		u.Line("Command    %s  (note: %s isn't on your PATH)", m.SymlinkAs, u.Path(r.l.BinDir))
+		u.Line("%s   %s  (note: %s isn't on your PATH)", label, cmds, u.Path(r.l.BinDir))
 	} else {
-		u.Line("Command    %s", m.SymlinkAs)
+		u.Line("%s   %s", label, cmds)
 	}
 	if m.CliOnly {
 		u.Line("Shortcut   none (CLI-only)")

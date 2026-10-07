@@ -95,8 +95,17 @@ var archWords = map[string][]string{
 // Resolved is a download URL found from a manifest.
 type Resolved struct {
 	URL     string
-	Version string // release name when the source reports one (GitHub tag), else ""
+	Version string // release name when the source reports one (GitHub/GitLab tag), else ""
+
+	// Published checksum, when the source offers one (see Checksum).
+	SHA256           string // known directly (GitHub asset digest, api checksum_query)
+	ChecksumURL      string // a file listing SHA-256 sums
+	ChecksumOrigin   string // where it comes from, for messages
+	ChecksumRequired bool   // the recipe asked for it: failing to check it is an error
 }
+
+// GitLabHost is the default GitLab instance.
+var GitLabHost = "https://gitlab.com"
 
 // Resolve returns the download URL for arch ("x64" or "arm64"): from the
 // manifest's source when it has one, otherwise its fixed default_url_*.
@@ -104,10 +113,19 @@ func Resolve(ctx context.Context, m manifest.Manifest, arch string) (Resolved, e
 	if m.Source != nil {
 		switch m.Source.Type {
 		case "api":
-			u, err := resolveAPI(ctx, m.Source, arch)
-			return Resolved{URL: u}, err
+			return resolveAPI(ctx, m.Source, arch)
 		case "github":
-			return resolveGitHub(ctx, m.Source, arch)
+			rel, err := fetchGitHub(ctx, m.Source.Repository)
+			if err != nil {
+				return Resolved{}, err
+			}
+			return pickAsset(rel, m.Source, arch)
+		case "gitlab":
+			rel, err := fetchGitLab(ctx, m.Source)
+			if err != nil {
+				return Resolved{}, err
+			}
+			return pickAsset(rel, m.Source, arch)
 		}
 		return Resolved{}, fmt.Errorf("unknown source type %q", m.Source.Type)
 	}
@@ -117,55 +135,139 @@ func Resolve(ctx context.Context, m manifest.Manifest, arch string) (Resolved, e
 	return Resolved{}, fmt.Errorf("the manifest has no download URL for %s. Use -u <url>", arch)
 }
 
-func resolveAPI(ctx context.Context, s *manifest.Source, arch string) (string, error) {
-	query, err := gojq.Parse(s.JqQuery)
+// jqFirstString runs a jq query and returns its first non-empty string result.
+func jqFirstString(ctx context.Context, field, q string, data any, arch string) (string, error) {
+	query, err := gojq.Parse(q)
 	if err != nil {
-		return "", fmt.Errorf("invalid jq_query: %w", err)
+		return "", fmt.Errorf("invalid %s: %w", field, err)
 	}
 	code, err := gojq.Compile(query, gojq.WithVariables([]string{"$arch", "$goarch", "$os"}))
 	if err != nil {
-		return "", fmt.Errorf("invalid jq_query: %w", err)
-	}
-	data, err := getJSON(ctx, s.Endpoint)
-	if err != nil {
-		return "", err
+		return "", fmt.Errorf("invalid %s: %w", field, err)
 	}
 	iter := code.RunWithContext(ctx, data, arch, goArch[arch], "linux")
 	for {
 		v, ok := iter.Next()
 		if !ok {
-			break
+			return "", nil
 		}
 		if err, isErr := v.(error); isErr {
-			return "", fmt.Errorf("jq_query failed: %w", err)
+			return "", fmt.Errorf("%s failed: %w", field, err)
 		}
 		if str, isStr := v.(string); isStr && str != "" {
 			return str, nil
 		}
 	}
-	return "", fmt.Errorf("jq_query returned no URL from %s", redact(s.Endpoint))
 }
 
-type githubRelease struct {
-	TagName string `json:"tag_name"`
-	Assets  []struct {
-		Name string `json:"name"`
-		URL  string `json:"browser_download_url"`
-	} `json:"assets"`
-}
+var hexSHA256 = regexp.MustCompile(`^[0-9a-fA-F]{64}$`)
 
-func resolveGitHub(ctx context.Context, s *manifest.Source, arch string) (Resolved, error) {
-	resp, err := get(ctx, fmt.Sprintf("%s/repos/%s/releases/latest", GitHubAPI, s.Repository))
+func resolveAPI(ctx context.Context, s *manifest.Source, arch string) (Resolved, error) {
+	data, err := getJSON(ctx, s.Endpoint)
 	if err != nil {
 		return Resolved{}, err
 	}
-	defer resp.Body.Close()
-	var rel githubRelease
-	if err := json.NewDecoder(io.LimitReader(resp.Body, 32<<20)).Decode(&rel); err != nil {
-		return Resolved{}, fmt.Errorf("unexpected GitHub response: %w", err)
+	u, err := jqFirstString(ctx, "jq_query", s.JqQuery, data, arch)
+	if err != nil {
+		return Resolved{}, err
 	}
-	found := func(u string) (Resolved, error) { return Resolved{URL: u, Version: rel.TagName}, nil }
+	if u == "" {
+		return Resolved{}, fmt.Errorf("jq_query returned no URL from %s", redact(s.Endpoint))
+	}
+	r := Resolved{URL: u}
+	if s.ChecksumQuery != "" {
+		sum, err := jqFirstString(ctx, "checksum_query", s.ChecksumQuery, data, arch)
+		switch {
+		case err != nil:
+			return Resolved{}, err
+		case hexSHA256.MatchString(sum):
+			r.SHA256 = strings.ToLower(sum)
+		case strings.HasPrefix(sum, "https://") || strings.HasPrefix(sum, "http://"):
+			r.ChecksumURL = sum
+		default:
+			return Resolved{}, fmt.Errorf("checksum_query returned neither a SHA-256 nor a URL: %q", sum)
+		}
+		r.ChecksumOrigin, r.ChecksumRequired = "the vendor's API", true
+	}
+	return r, nil
+}
 
+// release is a GitHub or GitLab release.
+type release struct {
+	Repo   string
+	Tag    string
+	Assets []asset
+}
+
+type asset struct {
+	Name   string
+	URL    string
+	Digest string // "sha256:<hex>" when the host publishes it
+}
+
+func fetchGitHub(ctx context.Context, repo string) (release, error) {
+	resp, err := get(ctx, fmt.Sprintf("%s/repos/%s/releases/latest", GitHubAPI, repo))
+	if err != nil {
+		return release{}, err
+	}
+	defer resp.Body.Close()
+	var raw struct {
+		TagName string `json:"tag_name"`
+		Assets  []struct {
+			Name   string `json:"name"`
+			URL    string `json:"browser_download_url"`
+			Digest string `json:"digest"`
+		} `json:"assets"`
+	}
+	if err := json.NewDecoder(io.LimitReader(resp.Body, 32<<20)).Decode(&raw); err != nil {
+		return release{}, fmt.Errorf("unexpected GitHub response: %w", err)
+	}
+	rel := release{Repo: repo, Tag: raw.TagName}
+	for _, a := range raw.Assets {
+		rel.Assets = append(rel.Assets, asset{Name: a.Name, URL: a.URL, Digest: a.Digest})
+	}
+	return rel, nil
+}
+
+func fetchGitLab(ctx context.Context, s *manifest.Source) (release, error) {
+	host := strings.TrimSuffix(s.Host, "/")
+	if host == "" {
+		host = GitLabHost
+	}
+	resp, err := get(ctx, fmt.Sprintf("%s/api/v4/projects/%s/releases/permalink/latest", host, url.PathEscape(s.Repository)))
+	if err != nil {
+		return release{}, err
+	}
+	defer resp.Body.Close()
+	var raw struct {
+		TagName string `json:"tag_name"`
+		Assets  struct {
+			Links []struct {
+				Name           string `json:"name"`
+				URL            string `json:"url"`
+				DirectAssetURL string `json:"direct_asset_url"`
+			} `json:"links"`
+		} `json:"assets"`
+	}
+	if err := json.NewDecoder(io.LimitReader(resp.Body, 32<<20)).Decode(&raw); err != nil {
+		return release{}, fmt.Errorf("unexpected GitLab response: %w", err)
+	}
+	rel := release{Repo: s.Repository, Tag: raw.TagName}
+	for _, l := range raw.Assets.Links {
+		u := l.DirectAssetURL
+		if u == "" {
+			u = l.URL
+		}
+		rel.Assets = append(rel.Assets, asset{Name: l.Name, URL: u})
+	}
+	return rel, nil
+}
+
+// sumsFiles are common names of release files that list SHA-256 sums for every asset.
+var sumsFiles = []string{"SHA256SUMS", "SHA256SUMS.txt", "sha256sums.txt", "sha256sum.txt", "sha256sums", "checksums.txt", "checksums.sha256"}
+
+// pickAsset chooses the download for arch from a release, and how to check it.
+func pickAsset(rel release, s *manifest.Source, arch string) (Resolved, error) {
 	pattern := s.AssetPattern
 	switch {
 	case arch == "x64" && s.AssetPatternX64 != "":
@@ -173,31 +275,149 @@ func resolveGitHub(ctx context.Context, s *manifest.Source, arch string) (Resolv
 	case arch == "arm64" && s.AssetPatternArm64 != "":
 		pattern = s.AssetPatternArm64
 	}
-	for _, a := range rel.Assets {
+	var chosen *asset
+	for i, a := range rel.Assets {
 		if pattern != "" && matchAsset(pattern, a.Name) && !isSidecar(a.Name) {
-			return found(a.URL)
+			chosen = &rel.Assets[i]
+			break
 		}
 	}
 	// Without a pattern: a Linux download that names this architecture, preferring
 	// formats in the order of archive.Extensions (.tar.gz first).
 	if pattern == "" {
+	search:
 		for _, ext := range archive.Extensions {
-			for _, a := range rel.Assets {
+			for i, a := range rel.Assets {
 				lower := strings.ToLower(a.Name)
 				if strings.HasSuffix(a.Name, ext) && strings.Contains(lower, "linux") && containsAny(lower, archWords[arch]) {
-					return found(a.URL)
+					chosen = &rel.Assets[i]
+					break search
 				}
 			}
 		}
 	}
-	names := make([]string, 0, len(rel.Assets))
-	for _, a := range rel.Assets {
-		names = append(names, a.Name)
+	if chosen == nil {
+		names := make([]string, 0, len(rel.Assets))
+		for _, a := range rel.Assets {
+			names = append(names, a.Name)
+		}
+		if pattern == "" {
+			pattern = "(automatic)"
+		}
+		return Resolved{}, fmt.Errorf("no asset in %s %s matches %q for %s (assets: %s)", rel.Repo, rel.Tag, pattern, arch, strings.Join(names, ", "))
 	}
-	if pattern == "" {
-		pattern = "(automatic)"
+
+	r := Resolved{URL: chosen.URL, Version: rel.Tag}
+	byName := func(match func(string) bool) *asset {
+		for i, a := range rel.Assets {
+			if match(a.Name) {
+				return &rel.Assets[i]
+			}
+		}
+		return nil
 	}
-	return Resolved{}, fmt.Errorf("no asset in %s %s matches %q for %s (assets: %s)", s.Repository, rel.TagName, pattern, arch, strings.Join(names, ", "))
+	switch {
+	case s.Checksums == "none":
+	case s.Checksums != "":
+		sums := byName(func(n string) bool { return matchAsset(s.Checksums, n) })
+		if sums == nil {
+			return Resolved{}, fmt.Errorf("the checksum file %q isn't in %s %s", s.Checksums, rel.Repo, rel.Tag)
+		}
+		r.ChecksumURL, r.ChecksumOrigin, r.ChecksumRequired = sums.URL, sums.Name, true
+	case strings.HasPrefix(chosen.Digest, "sha256:"):
+		r.SHA256, r.ChecksumOrigin = strings.TrimPrefix(chosen.Digest, "sha256:"), "the release's published digest"
+	default:
+		sidecar := byName(func(n string) bool { return n == chosen.Name+".sha256" || n == chosen.Name+".sha256sum" })
+		if sidecar == nil {
+			sidecar = byName(func(n string) bool {
+				for _, f := range sumsFiles {
+					if strings.EqualFold(n, f) || strings.HasSuffix(strings.ToLower(n), "_"+strings.ToLower(f)) {
+						return true
+					}
+				}
+				return false
+			})
+		}
+		if sidecar != nil {
+			r.ChecksumURL, r.ChecksumOrigin = sidecar.URL, sidecar.Name
+		}
+	}
+	return r, nil
+}
+
+var bsdSum = regexp.MustCompile(`^SHA256 \((.+)\) = ([0-9a-fA-F]{64})$`)
+
+// parseSums finds the SHA-256 for file in a checksum listing: GNU style
+// ("<hash>  <name>" or "<hash> *<name>"), BSD style ("SHA256 (<name>) = <hash>"),
+// or a file holding just one hash.
+func parseSums(text, file string) string {
+	var lone []string
+	for _, line := range strings.Split(text, "\n") {
+		line = strings.TrimSpace(line)
+		if m := bsdSum.FindStringSubmatch(line); m != nil {
+			if path.Base(m[1]) == file {
+				return strings.ToLower(m[2])
+			}
+			continue
+		}
+		fields := strings.Fields(line)
+		if len(fields) == 0 || !hexSHA256.MatchString(fields[0]) {
+			continue
+		}
+		if len(fields) == 1 {
+			lone = append(lone, fields[0])
+			continue
+		}
+		name := strings.TrimPrefix(strings.Join(fields[1:], " "), "*")
+		if path.Base(strings.TrimPrefix(name, "./")) == file {
+			return strings.ToLower(fields[0])
+		}
+	}
+	if len(lone) == 1 {
+		return strings.ToLower(lone[0])
+	}
+	return ""
+}
+
+// downloadName is the file name in a URL's path.
+func downloadName(rawURL string) string {
+	u, err := url.Parse(rawURL)
+	if err != nil {
+		return ""
+	}
+	name := path.Base(u.Path)
+	if unescaped, err := url.PathUnescape(name); err == nil {
+		name = unescaped
+	}
+	return name
+}
+
+// Checksum returns the published SHA-256 for r's download, or "" when r has none.
+// A checksum file that doesn't list the download is an error only when required.
+func Checksum(ctx context.Context, r Resolved) (string, error) {
+	if r.SHA256 != "" {
+		return strings.ToLower(r.SHA256), nil
+	}
+	if r.ChecksumURL == "" {
+		return "", nil
+	}
+	resp, err := get(ctx, r.ChecksumURL)
+	if err != nil {
+		return "", fmt.Errorf("fetching %s: %w", r.ChecksumOrigin, err)
+	}
+	defer resp.Body.Close()
+	data, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+	if err != nil {
+		return "", fmt.Errorf("fetching %s: %w", r.ChecksumOrigin, err)
+	}
+	file := downloadName(r.URL)
+	if sum := parseSums(string(data), file); sum != "" {
+		return sum, nil
+	}
+	if r.ChecksumRequired {
+		return "", fmt.Errorf("%s doesn't list %s", r.ChecksumOrigin, file)
+	}
+	return "", nil
 }
 
 // isSidecar reports release files that accompany a download (checksums, signatures, notes).

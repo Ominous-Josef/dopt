@@ -9,6 +9,7 @@
   "source": {
     "type": "api",
     "endpoint": "https://data.services.jetbrains.com/products/releases?code=TBA&latest=true&type=release",
-    "jq_query": ".TBA[0].downloads | if $arch == \"arm64\" then .linuxARM64 else .linux end | .link"
+    "jq_query": ".TBA[0].downloads | if $arch == \"arm64\" then .linuxARM64 else .linux end | .link",
+    "checksum_query": ".TBA[0].downloads | if $arch == \"arm64\" then .linuxARM64 else .linux end | .checksumLink"
   }
 }

@@ -8,6 +8,8 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"path"
+	"path/filepath"
 	"reflect"
 	"runtime"
 	"sort"
@@ -36,31 +38,53 @@ func (b *FlexBool) UnmarshalJSON(data []byte) error {
 
 // Source describes how to find the download URL dynamically.
 type Source struct {
-	Type              string `json:"type"`                          // "api" or "github"
+	Type              string `json:"type"`                          // "api", "github" or "gitlab"
 	Endpoint          string `json:"endpoint,omitempty"`            // api: JSON endpoint
 	JqQuery           string `json:"jq_query,omitempty"`            // api: query with $arch, $goarch, $os
-	Repository        string `json:"repository,omitempty"`          // github: owner/name
-	AssetPattern      string `json:"asset_pattern,omitempty"`       // github: any architecture
-	AssetPatternX64   string `json:"asset_pattern_x64,omitempty"`   // github: x86_64 only
-	AssetPatternArm64 string `json:"asset_pattern_arm64,omitempty"` // github: aarch64 only
+	ChecksumQuery     string `json:"checksum_query,omitempty"`      // api: query giving a SHA-256 or a checksum file URL
+	Repository        string `json:"repository,omitempty"`          // github/gitlab: owner/name (gitlab: group/.../project)
+	Host              string `json:"host,omitempty"`                // gitlab: instance URL (default https://gitlab.com)
+	AssetPattern      string `json:"asset_pattern,omitempty"`       // github/gitlab: any architecture
+	AssetPatternX64   string `json:"asset_pattern_x64,omitempty"`   // github/gitlab: x86_64 only
+	AssetPatternArm64 string `json:"asset_pattern_arm64,omitempty"` // github/gitlab: aarch64 only
+	Checksums         string `json:"checksums,omitempty"`           // github/gitlab: release asset with SHA-256 sums (required when set), or "none"
+}
+
+// Command is an extra command an app provides, linked next to the main one.
+type Command struct {
+	Path    string `json:"path,omitempty"`    // relative to the app folder
+	Pattern string `json:"pattern,omitempty"` // file name or glob, searched like binary_pattern
+	LinkAs  string `json:"link_as,omitempty"` // command name; defaults to the file name
+}
+
+// Name is the command's link name.
+func (c Command) Name() string {
+	if c.LinkAs != "" {
+		return c.LinkAs
+	}
+	if c.Path != "" {
+		return path.Base(c.Path)
+	}
+	return c.Pattern
 }
 
 // Manifest is one application recipe.
 type Manifest struct {
-	Schema          int      `json:"schema,omitempty"`
-	AppID           string   `json:"app_id"`
-	Name            string   `json:"name,omitempty"`
-	Comment         string   `json:"comment,omitempty"`
-	BinaryPattern   string   `json:"binary_pattern,omitempty"`
-	BinaryPath      string   `json:"binary_path,omitempty"`
-	IconPath        string   `json:"icon_path,omitempty"`
-	CliOnly         FlexBool `json:"cli_only,omitempty"`
-	SymlinkAs       string   `json:"symlink_as,omitempty"`
-	Categories      string   `json:"categories,omitempty"`
-	ExecFlags       string   `json:"exec_flags,omitempty"`
-	DefaultURLX64   string   `json:"default_url_x64,omitempty"`
-	DefaultURLArm64 string   `json:"default_url_arm64,omitempty"`
-	Source          *Source  `json:"source,omitempty"`
+	Schema          int       `json:"schema,omitempty"`
+	AppID           string    `json:"app_id"`
+	Name            string    `json:"name,omitempty"`
+	Comment         string    `json:"comment,omitempty"`
+	BinaryPattern   string    `json:"binary_pattern,omitempty"`
+	BinaryPath      string    `json:"binary_path,omitempty"`
+	IconPath        string    `json:"icon_path,omitempty"`
+	CliOnly         FlexBool  `json:"cli_only,omitempty"`
+	SymlinkAs       string    `json:"symlink_as,omitempty"`
+	Categories      string    `json:"categories,omitempty"`
+	ExecFlags       string    `json:"exec_flags,omitempty"`
+	DefaultURLX64   string    `json:"default_url_x64,omitempty"`
+	DefaultURLArm64 string    `json:"default_url_arm64,omitempty"`
+	Source          *Source   `json:"source,omitempty"`
+	Binaries        []Command `json:"binaries,omitempty"` // extra commands
 
 	// Schema 1 only. Ignored: apps always install into <opt dir>/<app_id>.
 	DefaultInstallDir string `json:"default_install_dir,omitempty"`
@@ -138,13 +162,33 @@ func (m Manifest) Validate() error {
 			if m.Source.Endpoint == "" || m.Source.JqQuery == "" {
 				return errors.New("source type 'api' needs 'endpoint' and 'jq_query'")
 			}
-		case "github":
+		case "github", "gitlab":
 			if m.Source.Repository == "" {
-				return errors.New("source type 'github' needs 'repository'")
+				return fmt.Errorf("source type '%s' needs 'repository'", m.Source.Type)
 			}
 		default:
-			return fmt.Errorf("unknown source type %q (expected 'api' or 'github')", m.Source.Type)
+			return fmt.Errorf("unknown source type %q (expected 'api', 'github' or 'gitlab')", m.Source.Type)
 		}
+	}
+	seen := map[string]bool{m.SymlinkAs: true}
+	for i, c := range m.Binaries {
+		if (c.Path == "") == (c.Pattern == "") {
+			return fmt.Errorf("binaries[%d] needs exactly one of 'path' and 'pattern'", i)
+		}
+		if c.Path != "" && !filepath.IsLocal(c.Path) {
+			return fmt.Errorf("binaries[%d]: 'path' must stay inside the app folder", i)
+		}
+		name := c.Name()
+		if strings.ContainsAny(name, "*?[") {
+			return fmt.Errorf("binaries[%d]: set 'link_as' (a pattern can't be a command name)", i)
+		}
+		if err := names.Validate(fmt.Sprintf("binaries[%d] command name", i), name); err != nil {
+			return err
+		}
+		if seen[name] {
+			return fmt.Errorf("binaries[%d]: the command name '%s' is used twice", i, name)
+		}
+		seen[name] = true
 	}
 	return nil
 }

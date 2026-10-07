@@ -5,11 +5,15 @@
   "comment": "The Go programming language compiler and tools",
   "binary_path": "bin/go",
   "symlink_as": "go",
+  "binaries": [
+    { "path": "bin/gofmt" }
+  ],
   "cli_only": true,
   "categories": "Development;",
   "source": {
     "type": "api",
     "endpoint": "https://go.dev/dl/?mode=json",
-    "jq_query": ".[0].files[] | select(.os == $os and .arch == $goarch and .kind == \"archive\") | \"https://go.dev/dl/\\(.filename)\""
+    "jq_query": ".[0].files[] | select(.os == $os and .arch == $goarch and .kind == \"archive\") | \"https://go.dev/dl/\\(.filename)\"",
+    "checksum_query": ".[0].files[] | select(.os == $os and .arch == $goarch and .kind == \"archive\") | .sha256"
   }
 }

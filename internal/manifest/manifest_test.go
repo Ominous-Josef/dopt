@@ -122,3 +122,37 @@ func TestArch(t *testing.T) {
 		t.Error("riscv64: want error")
 	}
 }
+
+func TestBinaries(t *testing.T) {
+	m, warnings, err := Parse([]byte(`{"app_id":"golang","binary_path":"bin/go","symlink_as":"go",
+		"binaries":[{"path":"bin/gofmt"},{"pattern":"go-*","link_as":"gotool"}]}`))
+	if err != nil || len(warnings) != 0 {
+		t.Fatal(err, warnings)
+	}
+	if m.Binaries[0].Name() != "gofmt" || m.Binaries[1].Name() != "gotool" {
+		t.Errorf("names = %s, %s", m.Binaries[0].Name(), m.Binaries[1].Name())
+	}
+	bad := map[string]string{
+		`[{"path":"bin/go"}]`:                     "used twice",
+		`[{"path":"../x"}]`:                       "inside the app folder",
+		`[{"pattern":"go*"}]`:                     "link_as",
+		`[{}]`:                                    "exactly one",
+		`[{"path":"a","pattern":"b"}]`:            "exactly one",
+		`[{"path":"bin/x","link_as":"bad/name"}]`: "command name",
+	}
+	for bins, want := range bad {
+		_, _, err := Parse([]byte(`{"app_id":"golang","binary_path":"bin/go","symlink_as":"go","binaries":` + bins + `}`))
+		if err == nil || !strings.Contains(err.Error(), want) {
+			t.Errorf("%s: err = %v, want %q", bins, err, want)
+		}
+	}
+}
+
+func TestGitLabSource(t *testing.T) {
+	if _, _, err := Parse([]byte(`{"app_id":"glab","binary_path":"bin/glab","source":{"type":"gitlab","repository":"gitlab-org/cli","checksums":"checksums.txt"}}`)); err != nil {
+		t.Error(err)
+	}
+	if _, _, err := Parse([]byte(`{"app_id":"glab","binary_path":"bin/glab","source":{"type":"gitlab"}}`)); err == nil {
+		t.Error("gitlab without repository: want error")
+	}
+}
