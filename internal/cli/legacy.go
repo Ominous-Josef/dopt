@@ -200,7 +200,14 @@ func runInstall(o InstallOptions) error {
 	fmt.Printf("[+] Symlink created: %s -> %s\n", binLink, binaryTarget)
 
 	if !m.CliOnly {
-		desktop.CreateDesktopEntry(m, installDir, binLink, binaryTarget)
+		err := desktop.Write(filepath.Join("/usr/share/applications", m.AppID+".desktop"), desktop.Entry{
+			Name: m.Name, Comment: m.Comment, Command: binLink, Flags: m.ExecFlags,
+			Icon:       desktop.FindIcon(installDir, m.IconPath, m.AppID, m.SymlinkAs),
+			Categories: m.Categories, WMClass: filepath.Base(binaryTarget),
+		})
+		if err != nil {
+			return err
+		}
 	}
 
 	if downloadUrl != "" {
