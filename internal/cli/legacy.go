@@ -4,6 +4,7 @@ package cli
 // new pipeline (internal/install) is built. Replaced in the install-pipeline phase.
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"os"
@@ -17,7 +18,7 @@ import (
 	"github.com/Ominous-Josef/dopt/internal/desktop"
 	"github.com/Ominous-Josef/dopt/internal/manifest"
 	"github.com/Ominous-Josef/dopt/internal/names"
-	"github.com/Ominous-Josef/dopt/internal/network"
+	"github.com/Ominous-Josef/dopt/internal/source"
 	"github.com/Ominous-Josef/dopt/internal/sysuser"
 	"github.com/Ominous-Josef/dopt/internal/ui"
 	"github.com/Ominous-Josef/dopt/internal/utils"
@@ -96,10 +97,14 @@ func runInstall(o InstallOptions) error {
 	if o.URL != "" {
 		downloadUrl = o.URL
 	} else if o.Download {
-		downloadUrl = network.ResolveDownloadUrl(m)
-		if downloadUrl != "" {
-			fmt.Printf("[+] Resolved download URL: %s\n", downloadUrl)
+		arch, err := manifest.HostArch()
+		if err != nil {
+			return err
 		}
+		if downloadUrl, err = source.Resolve(context.Background(), m, arch); err != nil {
+			return err
+		}
+		fmt.Printf("[+] Resolved download URL: %s\n", downloadUrl)
 	}
 	if o.Download && downloadUrl == "" {
 		return errors.New("no download URL found. Use -u <url>")
@@ -115,7 +120,15 @@ func runInstall(o InstallOptions) error {
 			return fmt.Errorf("archive not found: %s", archivePath)
 		}
 	} else if downloadUrl != "" {
-		archivePath = network.DownloadFile(downloadUrl, m.AppID)
+		dlDir, err := os.MkdirTemp("", "dopt-download-*")
+		if err != nil {
+			return err
+		}
+		defer os.RemoveAll(dlDir)
+		archivePath = filepath.Join(dlDir, "source_package.tar.gz")
+		if err := source.Download(context.Background(), downloadUrl, archivePath, nil); err != nil {
+			return err
+		}
 	} else {
 		return errors.New("no archive given. Pass -f <file>, -u <url> or -d")
 	}
@@ -127,8 +140,11 @@ func runInstall(o InstallOptions) error {
 	defer os.RemoveAll(tmpDir)
 
 	fmt.Printf("[*] Extracting execution code assets...\n")
-	if err := archive.ExtractTarGz(archivePath, tmpDir); err != nil {
+	if err := archive.Extract(archivePath, tmpDir); err != nil {
 		return fmt.Errorf("extracting archive: %w", err)
+	}
+	if tmpDir, err = archive.InstallRoot(tmpDir); err != nil {
+		return err
 	}
 
 	var localBin string
@@ -191,17 +207,11 @@ func runInstall(o InstallOptions) error {
 		if o.Cleanup {
 			os.Remove(archivePath)
 		} else {
-			urlFileName := filepath.Base(downloadUrl)
-			if strings.HasPrefix(urlFileName, "download") || urlFileName == "." || urlFileName == "/" {
-				urlFileName = m.AppID + "-linux.tar.gz"
-			}
 			cwd, _ := os.Getwd()
-			outputDest := filepath.Join(cwd, urlFileName)
-			if err := os.Rename(archivePath, outputDest); err != nil {
-				utils.CopyFile(archivePath, outputDest)
-				os.Remove(archivePath)
+			outputDest, err := source.Keep(archivePath, downloadUrl, m.AppID, cwd, usr.UID, usr.GID)
+			if err != nil {
+				return err
 			}
-			os.Lchown(outputDest, usr.UID, usr.GID)
 			fmt.Printf("[i] Local installation backup kept at: %s\n", outputDest)
 		}
 	}
