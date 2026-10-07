@@ -92,22 +92,29 @@ var archWords = map[string][]string{
 	"arm64": {"aarch64", "arm64"},
 }
 
+// Resolved is a download URL found from a manifest.
+type Resolved struct {
+	URL     string
+	Version string // release name when the source reports one (GitHub tag), else ""
+}
+
 // Resolve returns the download URL for arch ("x64" or "arm64"): from the
 // manifest's source when it has one, otherwise its fixed default_url_*.
-func Resolve(ctx context.Context, m manifest.Manifest, arch string) (string, error) {
+func Resolve(ctx context.Context, m manifest.Manifest, arch string) (Resolved, error) {
 	if m.Source != nil {
 		switch m.Source.Type {
 		case "api":
-			return resolveAPI(ctx, m.Source, arch)
+			u, err := resolveAPI(ctx, m.Source, arch)
+			return Resolved{URL: u}, err
 		case "github":
 			return resolveGitHub(ctx, m.Source, arch)
 		}
-		return "", fmt.Errorf("unknown source type %q", m.Source.Type)
+		return Resolved{}, fmt.Errorf("unknown source type %q", m.Source.Type)
 	}
 	if u := m.DefaultURL(arch); u != "" {
-		return u, nil
+		return Resolved{URL: u}, nil
 	}
-	return "", fmt.Errorf("the manifest has no download URL for %s. Use -u <url>", arch)
+	return Resolved{}, fmt.Errorf("the manifest has no download URL for %s. Use -u <url>", arch)
 }
 
 func resolveAPI(ctx context.Context, s *manifest.Source, arch string) (string, error) {
@@ -147,16 +154,17 @@ type githubRelease struct {
 	} `json:"assets"`
 }
 
-func resolveGitHub(ctx context.Context, s *manifest.Source, arch string) (string, error) {
+func resolveGitHub(ctx context.Context, s *manifest.Source, arch string) (Resolved, error) {
 	resp, err := get(ctx, fmt.Sprintf("%s/repos/%s/releases/latest", GitHubAPI, s.Repository))
 	if err != nil {
-		return "", err
+		return Resolved{}, err
 	}
 	defer resp.Body.Close()
 	var rel githubRelease
 	if err := json.NewDecoder(io.LimitReader(resp.Body, 32<<20)).Decode(&rel); err != nil {
-		return "", fmt.Errorf("unexpected GitHub response: %w", err)
+		return Resolved{}, fmt.Errorf("unexpected GitHub response: %w", err)
 	}
+	found := func(u string) (Resolved, error) { return Resolved{URL: u, Version: rel.TagName}, nil }
 
 	pattern := s.AssetPattern
 	switch {
@@ -166,16 +174,19 @@ func resolveGitHub(ctx context.Context, s *manifest.Source, arch string) (string
 		pattern = s.AssetPatternArm64
 	}
 	for _, a := range rel.Assets {
-		if pattern != "" && matchAsset(pattern, a.Name) && isArchive(a.Name) {
-			return a.URL, nil
+		if pattern != "" && matchAsset(pattern, a.Name) && archive.HasArchiveExt(a.Name) {
+			return found(a.URL)
 		}
 	}
-	// Without a usable pattern: a Linux .tar.gz that names this architecture.
+	// Without a pattern: a Linux download that names this architecture, preferring
+	// formats in the order of archive.Extensions (.tar.gz first).
 	if pattern == "" {
-		for _, a := range rel.Assets {
-			lower := strings.ToLower(a.Name)
-			if isArchive(lower) && strings.Contains(lower, "linux") && containsAny(lower, archWords[arch]) {
-				return a.URL, nil
+		for _, ext := range archive.Extensions {
+			for _, a := range rel.Assets {
+				lower := strings.ToLower(a.Name)
+				if strings.HasSuffix(a.Name, ext) && strings.Contains(lower, "linux") && containsAny(lower, archWords[arch]) {
+					return found(a.URL)
+				}
 			}
 		}
 	}
@@ -186,7 +197,7 @@ func resolveGitHub(ctx context.Context, s *manifest.Source, arch string) (string
 	if pattern == "" {
 		pattern = "(automatic)"
 	}
-	return "", fmt.Errorf("no asset in %s %s matches %q for %s (assets: %s)", s.Repository, rel.TagName, pattern, arch, strings.Join(names, ", "))
+	return Resolved{}, fmt.Errorf("no asset in %s %s matches %q for %s (assets: %s)", s.Repository, rel.TagName, pattern, arch, strings.Join(names, ", "))
 }
 
 // matchAsset treats patterns with glob characters as globs and others as substrings.
@@ -196,10 +207,6 @@ func matchAsset(pattern, name string) bool {
 		return ok
 	}
 	return strings.Contains(name, pattern)
-}
-
-func isArchive(name string) bool {
-	return strings.HasSuffix(name, ".tar.gz") || strings.HasSuffix(name, ".tgz")
 }
 
 func containsAny(s string, words []string) bool {
@@ -214,17 +221,37 @@ func containsAny(s string, words []string) bool {
 // Progress receives download progress; total is -1 when the size is unknown.
 type Progress func(done, total int64)
 
+// Fetched describes what a URL served, to recognize the release later.
+type Fetched struct {
+	URL          string // as requested
+	FinalURL     string // after redirects
+	ETag         string
+	LastModified string
+	Length       int64 // -1 if unknown
+}
+
+func fetched(rawURL string, resp *http.Response) Fetched {
+	return Fetched{
+		URL:          rawURL,
+		FinalURL:     resp.Request.URL.String(),
+		ETag:         resp.Header.Get("ETag"),
+		LastModified: resp.Header.Get("Last-Modified"),
+		Length:       resp.ContentLength,
+	}
+}
+
 // Download saves rawURL to dest. On failure nothing is left at dest.
-func Download(ctx context.Context, rawURL, dest string, progress Progress) (err error) {
+func Download(ctx context.Context, rawURL, dest string, progress Progress) (info Fetched, err error) {
 	resp, err := get(ctx, rawURL)
 	if err != nil {
-		return err
+		return info, err
 	}
 	defer resp.Body.Close()
+	info = fetched(rawURL, resp)
 
 	f, err := os.OpenFile(dest, os.O_CREATE|os.O_WRONLY|os.O_EXCL, 0o644)
 	if err != nil {
-		return err
+		return info, err
 	}
 	defer func() {
 		if cerr := f.Close(); err == nil {
@@ -240,9 +267,101 @@ func Download(ctx context.Context, rawURL, dest string, progress Progress) (err 
 		w = &progressWriter{w: f, total: resp.ContentLength, report: progress}
 	}
 	if _, err := io.Copy(w, resp.Body); err != nil {
-		return fmt.Errorf("download interrupted: %w", err)
+		return info, fmt.Errorf("download interrupted: %w", err)
 	}
-	return nil
+	return info, nil
+}
+
+// Probe asks what rawURL currently serves without downloading it: a HEAD
+// request, or a one-byte GET for servers that refuse HEAD (such as signed CDN URLs).
+func Probe(ctx context.Context, rawURL string) (Fetched, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodHead, rawURL, nil)
+	if err != nil {
+		return Fetched{}, err
+	}
+	req.Header.Set("User-Agent", UserAgent)
+	if resp, err := Client.Do(req); err == nil {
+		resp.Body.Close()
+		if resp.StatusCode == http.StatusOK {
+			return fetched(rawURL, resp), nil
+		}
+	}
+	req, _ = http.NewRequestWithContext(ctx, http.MethodGet, rawURL, nil)
+	req.Header.Set("User-Agent", UserAgent)
+	req.Header.Set("Range", "bytes=0-0")
+	resp, err := Client.Do(req)
+	if err != nil {
+		return Fetched{}, err
+	}
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusPartialContent {
+		return Fetched{}, fmt.Errorf("%s returned %s", redact(rawURL), resp.Status)
+	}
+	info := fetched(rawURL, resp)
+	if resp.StatusCode == http.StatusPartialContent {
+		info.Length = -1
+		if _, total, ok := strings.Cut(resp.Header.Get("Content-Range"), "/"); ok {
+			fmt.Sscan(total, &info.Length)
+		}
+	}
+	return info, nil
+}
+
+var versionPattern = regexp.MustCompile(`\d+(?:\.\d+)+`)
+
+// VersionFromURL finds a version number like 1.27.1 in a URL's path,
+// looking at the file name first, then the folders above it.
+func VersionFromURL(rawURL string) string {
+	u, err := url.Parse(rawURL)
+	if err != nil {
+		return ""
+	}
+	parts := strings.Split(u.Path, "/")
+	for i := len(parts) - 1; i >= 0; i-- {
+		if v := versionPattern.FindString(parts[i]); v != "" {
+			return v
+		}
+	}
+	return ""
+}
+
+func withoutQuery(rawURL string) string {
+	if u, err := url.Parse(rawURL); err == nil {
+		u.RawQuery, u.Fragment = "", ""
+		return u.String()
+	}
+	return rawURL
+}
+
+// Fingerprint identifies the release behind a download, so a later check can tell
+// whether it changed. It prefers a versioned URL (requested or after redirects),
+// then the server's ETag, then Last-Modified and size. reliable is false when
+// none of these exist and changes can't be detected.
+func Fingerprint(f Fetched) (fp string, reliable bool) {
+	for _, u := range []string{f.URL, f.FinalURL} {
+		if u != "" && VersionFromURL(u) != "" {
+			return "url:" + withoutQuery(u), true
+		}
+	}
+	if f.ETag != "" {
+		return "etag:" + f.ETag, true
+	}
+	if f.LastModified != "" {
+		return fmt.Sprintf("modified:%s:%d", f.LastModified, f.Length), true
+	}
+	return "url:" + withoutQuery(f.FinalURL), false
+}
+
+// Version is the best human-readable version for a release: the source's own
+// (GitHub tag), else one found in the requested or final URL.
+func Version(r Resolved, f Fetched) string {
+	if r.Version != "" {
+		return r.Version
+	}
+	if v := VersionFromURL(f.URL); v != "" {
+		return v
+	}
+	return VersionFromURL(f.FinalURL)
 }
 
 type progressWriter struct {
@@ -294,8 +413,9 @@ func VerifySHA256(p, expected string) (actual string, err error) {
 var safeName = regexp.MustCompile(`^[A-Za-z0-9._ +-]+$`)
 
 // SaveName picks the filename for keeping a download from rawURL: the URL's
-// last path segment if it is a plain .tar.gz/.tgz name, else <appID>-linux.tar.gz.
-func SaveName(rawURL, appID string) string {
+// last path segment if it is a plain name with a supported extension, else
+// <appID>-linux<ext> (ext from the detected format).
+func SaveName(rawURL, appID, ext string) string {
 	name := rawURL
 	if i := strings.IndexAny(name, "?#"); i >= 0 {
 		name = name[:i]
@@ -305,24 +425,35 @@ func SaveName(rawURL, appID string) string {
 		name = unescaped
 	}
 	if name == "" || name == "/" || name == "." || strings.HasPrefix(name, "download") ||
-		strings.HasPrefix(name, ".") || !safeName.MatchString(name) || !isArchive(name) {
-		return appID + "-linux.tar.gz"
+		strings.HasPrefix(name, ".") || !safeName.MatchString(name) || !archive.HasArchiveExt(name) {
+		return appID + "-linux" + ext
 	}
 	return name
 }
 
-// Keep moves the downloaded archive src into dir under SaveName, never overwriting:
+// splitExt splits name into stem and a known extension (".tar.gz", ".zip", ...).
+func splitExt(name string) (string, string) {
+	for _, ext := range archive.Extensions {
+		if strings.HasSuffix(name, ext) {
+			return strings.TrimSuffix(name, ext), ext
+		}
+	}
+	if ext := path.Ext(name); ext != "" {
+		return strings.TrimSuffix(name, ext), ext
+	}
+	return name, ""
+}
+
+// Keep moves the downloaded file src into dir under SaveName, never overwriting:
 // an identical existing copy is reused, otherwise name-1, name-2, ... is used.
-// It refuses archives that aren't readable. uid/gid >= 0 sets the new file's owner.
+// It refuses downloads that aren't readable. uid/gid >= 0 sets the new file's owner.
 func Keep(src, rawURL, appID, dir string, uid, gid int) (string, error) {
 	if err := archive.Valid(src); err != nil {
-		return "", fmt.Errorf("not keeping an unreadable archive: %w", err)
+		return "", fmt.Errorf("not keeping an unreadable download: %w", err)
 	}
-	name := SaveName(rawURL, appID)
-	stem, ext := strings.TrimSuffix(name, ".tar.gz"), ".tar.gz"
-	if strings.HasSuffix(name, ".tgz") {
-		stem, ext = strings.TrimSuffix(name, ".tgz"), ".tgz"
-	}
+	format, _ := archive.Detect(src)
+	name := SaveName(rawURL, appID, format.Ext())
+	stem, ext := splitExt(name)
 	for n := 0; ; n++ {
 		dest := filepath.Join(dir, name)
 		if n > 0 {

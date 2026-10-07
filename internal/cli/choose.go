@@ -13,6 +13,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/Ominous-Josef/dopt/internal/archive"
 	"github.com/Ominous-Josef/dopt/internal/install"
 	"github.com/Ominous-Josef/dopt/internal/layout"
 	"github.com/Ominous-Josef/dopt/internal/names"
@@ -131,7 +132,7 @@ type recent struct {
 	mtime time.Time
 }
 
-// recentArchives lists the newest .tar.gz/.tgz files directly in dir.
+// recentArchives lists the newest supported downloads directly in dir.
 func recentArchives(dir string, limit int) []recent {
 	entries, err := os.ReadDir(dir)
 	if err != nil {
@@ -140,7 +141,7 @@ func recentArchives(dir string, limit int) []recent {
 	var files []recent
 	for _, e := range entries {
 		name := e.Name()
-		if !e.Type().IsRegular() || !(strings.HasSuffix(name, ".tar.gz") || strings.HasSuffix(name, ".tgz")) {
+		if !e.Type().IsRegular() || !archive.HasArchiveExt(name) {
 			continue
 		}
 		if info, err := e.Info(); err == nil {

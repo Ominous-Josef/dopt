@@ -6,6 +6,7 @@ package registry
 
 import (
 	"bufio"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io/fs"
@@ -16,6 +17,7 @@ import (
 
 	"golang.org/x/sys/unix"
 
+	"github.com/Ominous-Josef/dopt/internal/manifest"
 	"github.com/Ominous-Josef/dopt/internal/names"
 )
 
@@ -28,6 +30,9 @@ const (
 	KeyBinary    = "binary"  // binary path relative to the install folder
 	KeyCommand   = "command" // command link name
 	KeySource    = "source"  // download URL or local archive path
+	KeyVersion   = "version" // release name, when known
+	KeyRelease   = "release" // fingerprint of the downloaded release (see source.Fingerprint)
+	KeyFormat    = "format"  // download format, e.g. "tar.xz"
 )
 
 // FolderIdentity is the folder's inode and birth time ("ino:btime", as `stat -c '%i:%W'`).
@@ -185,4 +190,68 @@ func List(dir string) ([]string, error) {
 		}
 	}
 	return ids, nil
+}
+
+// RecipePath is where the manifest an app was installed with is kept, for updates.
+func RecipePath(dir, appID string) string {
+	return filepath.Join(dir, "recipes", appID+".json")
+}
+
+// WriteRecipe saves the manifest appID was installed with.
+func WriteRecipe(dir, appID string, m manifest.Manifest) error {
+	if !names.Valid(appID) {
+		return fmt.Errorf("invalid app ID %q", appID)
+	}
+	data, err := json.MarshalIndent(m, "", "  ")
+	if err != nil {
+		return err
+	}
+	p := RecipePath(dir, appID)
+	if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
+		return err
+	}
+	tmp, err := os.CreateTemp(filepath.Dir(p), "."+appID+".tmp-*")
+	if err != nil {
+		return err
+	}
+	defer os.Remove(tmp.Name())
+	if _, err := tmp.Write(append(data, '\n')); err != nil {
+		tmp.Close()
+		return err
+	}
+	if err := tmp.Chmod(0o644); err != nil {
+		tmp.Close()
+		return err
+	}
+	if err := tmp.Close(); err != nil {
+		return err
+	}
+	return os.Rename(tmp.Name(), p)
+}
+
+// ReadRecipe returns the saved manifest for appID; ok is false if none was saved.
+func ReadRecipe(dir, appID string) (m manifest.Manifest, ok bool, err error) {
+	if !names.Valid(appID) {
+		return m, false, fmt.Errorf("invalid app ID %q", appID)
+	}
+	m, _, err = manifest.Load(RecipePath(dir, appID))
+	if errors.Is(err, fs.ErrNotExist) {
+		return m, false, nil
+	}
+	if err != nil {
+		return m, false, fmt.Errorf("the saved recipe for %s is unreadable: %w", appID, err)
+	}
+	return m, true, nil
+}
+
+// RemoveRecipe deletes appID's saved manifest; a missing one is not an error.
+func RemoveRecipe(dir, appID string) error {
+	if !names.Valid(appID) {
+		return fmt.Errorf("invalid app ID %q", appID)
+	}
+	err := os.Remove(RecipePath(dir, appID))
+	if errors.Is(err, fs.ErrNotExist) {
+		return nil
+	}
+	return err
 }

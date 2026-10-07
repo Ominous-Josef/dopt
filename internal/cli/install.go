@@ -110,7 +110,7 @@ func runInstall(o InstallOptions, u *ui.UI) error {
 		}
 		req.Download = true
 		resolveFrom := m
-		req.Resolve = func(ctx context.Context) (string, error) { return source.Resolve(ctx, resolveFrom, arch) }
+		req.Resolve = func(ctx context.Context) (source.Resolved, error) { return source.Resolve(ctx, resolveFrom, arch) }
 	}
 
 	// 4. App details: the manifest's, or asked by the wizard.

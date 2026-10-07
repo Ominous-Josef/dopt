@@ -60,14 +60,16 @@ type Request struct {
 	ManifestPath string            // shown in resume hints; "" when the wizard was used
 	Wizard       bool              // details came from prompts: offer the binary picker
 
-	Archive  string                                // local archive (when not downloading)
-	Download bool                                  // fetch the archive
-	URL      string                                // download URL, or "" to call Resolve
-	Resolve  func(context.Context) (string, error) // finds the URL from the manifest
-	SHA256   string                                // expected checksum (lowercase hex), optional
+	Archive  string                                         // local archive (when not downloading)
+	Download bool                                           // fetch the archive
+	URL      string                                         // download URL, or "" to call Resolve
+	Resolve  func(context.Context) (source.Resolved, error) // finds the URL from the manifest
+	Version  string                                         // release name already known for URL (e.g. a GitHub tag)
+	SHA256   string                                         // expected checksum (lowercase hex), optional
 
 	Cleanup        bool // delete the archive after a successful install
 	Force          bool // -i: no confirmations; abort where a decision is needed
+	Batch          bool // one of several updates: no launch prompt (a stopped app is still relaunched)
 	SymlinkFromCLI bool // -s was given (kept in resume hints)
 }
 
@@ -122,6 +124,9 @@ type run struct {
 	tarball    string
 	url        string
 	downloaded bool
+	fetched    source.Fetched // what the download URL served
+	version    string         // release name, when known
+	format     archive.Format
 	kept       bool
 	swapping   bool // the live folder may be moved aside: restore it on failure
 	renamed    bool
@@ -385,9 +390,11 @@ func (r *run) fetch() error {
 	u.Step("Downloading...")
 	r.url = r.req.URL
 	if r.url == "" && r.req.Resolve != nil {
-		if r.url, err = r.req.Resolve(r.ctx); err != nil {
+		resolved, err := r.req.Resolve(r.ctx)
+		if err != nil {
 			return fail(fmt.Sprintf("Couldn't find the download: %v", err))
 		}
+		r.url, r.req.Version = resolved.URL, resolved.Version
 		u.Detail("From %s", redactURL(r.url))
 	}
 	if r.url == "" {
@@ -404,7 +411,8 @@ func (r *run) fetch() error {
 			}
 		}
 	}
-	err = source.Download(r.ctx, r.url, r.tarball, progress)
+	r.fetched, err = source.Download(r.ctx, r.url, r.tarball, progress)
+	r.version = source.Version(source.Resolved{URL: r.url, Version: r.req.Version}, r.fetched)
 	if r.env.ShowProgress {
 		fmt.Fprintln(u.Err)
 	}
@@ -440,8 +448,17 @@ func (r *run) unpack() (string, error) {
 	if err := os.Mkdir(extracted, 0o755); err != nil {
 		return "", fail(err.Error())
 	}
-	if err := archive.Extract(r.tarball, extracted); err != nil {
-		return "", fail(fmt.Sprintf("Couldn't unpack the archive: %v", err))
+	single := singleFileName(m)
+	format, err := archive.Extract(r.tarball, extracted, single)
+	r.format = format
+	if err != nil {
+		return "", fail(fmt.Sprintf("Couldn't unpack the download: %v", err))
+	}
+	if r.format != (archive.Format{Compression: "gzip", Kind: archive.Tar}) {
+		u.Detail("Format: %s", r.format)
+	}
+	if r.format.Kind == archive.AppImage {
+		u.Detail("AppImages run as they are; they need FUSE (libfuse2) on the system")
 	}
 	root, err := archive.InstallRoot(extracted)
 	if errors.Is(err, archive.ErrEmpty) {
@@ -476,7 +493,9 @@ func (r *run) unpack() (string, error) {
 	}
 
 	staged := ""
-	if m.BinaryPath != "" {
+	if r.format.SingleFile() {
+		staged = filepath.Join(r.stage, single)
+	} else if m.BinaryPath != "" {
 		staged = filepath.Join(r.stage, m.BinaryPath)
 	} else {
 		staged = binfind.ByPattern(r.stage, m.BinaryPattern)
@@ -576,6 +595,7 @@ func (r *run) install(binaryRel string) (restart bool, err error) {
 		registry.KeyAppID:     m.AppID,
 		registry.KeyInstalled: r.env.Now().Format(time.RFC3339),
 		registry.KeyName:      desktop.Text(m.Name),
+		registry.KeyFormat:    r.format.String(),
 		registry.KeyBinary:    binaryRel,
 		registry.KeyCommand:   m.SymlinkAs,
 	}
@@ -585,8 +605,19 @@ func (r *run) install(binaryRel string) (restart bool, err error) {
 	if src := r.sourceRecord(); src != "" {
 		entry[registry.KeySource] = src
 	}
+	if r.downloaded {
+		if fp, reliable := source.Fingerprint(r.fetched); reliable && !strings.ContainsAny(fp, "\n\r") {
+			entry[registry.KeyRelease] = fp
+		}
+	}
+	if r.version != "" && !strings.ContainsAny(r.version, "\n\r") {
+		entry[registry.KeyVersion] = r.version
+	}
 	if err := registry.Write(r.l.RegistryDir, m.AppID, entry); err != nil {
 		u.Warn("Couldn't record the install in dopt's registry (%v). The next update will ask before replacing it.", err)
+	}
+	if err := registry.WriteRecipe(r.l.RegistryDir, m.AppID, r.recipe()); err != nil {
+		u.Warn("Couldn't save the recipe for later updates: %v", err)
 	}
 
 	if previous != "" && previous != m.SymlinkAs {
@@ -619,6 +650,35 @@ func (r *run) swap() error {
 	}
 	os.RemoveAll(r.backup)
 	return nil
+}
+
+// recipe is the manifest as installed, saved so `dopt update` can repeat the install.
+// A download from a URL the manifest doesn't know (-u, or the wizard) becomes its fixed URL.
+func (r *run) recipe() manifest.Manifest {
+	m := *r.m
+	m.Schema = manifest.CurrentSchema
+	m.DefaultInstallDir = ""
+	if r.downloaded && r.req.Resolve == nil && m.Source == nil {
+		if arch, err := manifest.HostArch(); err == nil {
+			if arch == "arm64" {
+				m.DefaultURLArm64 = r.url
+			} else {
+				m.DefaultURLX64 = r.url
+			}
+		}
+	}
+	return m
+}
+
+// singleFileName is the file name for a download that is the executable itself
+// (AppImage or bare binary): binary_path's or binary_pattern's name if plain, else the command name.
+func singleFileName(m *manifest.Manifest) string {
+	for _, n := range []string{m.BinaryPath, m.BinaryPattern} {
+		if n != "" && !strings.ContainsAny(n, "/*?[") && names.Valid(n) {
+			return n
+		}
+	}
+	return m.SymlinkAs
 }
 
 // previousCommand is the command link name of the existing install, if any.
@@ -743,6 +803,9 @@ func (r *run) summary(wasInstalled bool, archiveNote string) {
 	} else {
 		u.OK("%s installed", m.Name)
 	}
+	if r.version != "" {
+		u.Line("Version    %s", r.version)
+	}
 	u.Line("Location   %s  (%s)", u.Path(r.inst), humanSize(dirSize(r.inst)))
 	if !r.l.Global && !linker.OnPath(r.l.BinDir, r.env.PathEnv) {
 		u.Line("Command    %s  (note: %s isn't on your PATH)", m.SymlinkAs, u.Path(r.l.BinDir))
@@ -764,7 +827,7 @@ func (r *run) launch(restart bool) {
 	if m.CliOnly {
 		return
 	}
-	if r.req.Force {
+	if r.req.Force || r.req.Batch {
 		if restart {
 			if err := r.env.Launch(r.binLink); err != nil {
 				u.Warn("Couldn't relaunch %s: %v", m.Name, err)

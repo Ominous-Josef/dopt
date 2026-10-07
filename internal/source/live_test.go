@@ -25,12 +25,18 @@ func TestLiveRecipes(t *testing.T) {
 				t.Logf("%-24s %-5s (no download source)", m.AppID, arch)
 				continue
 			}
-			u, err := Resolve(context.Background(), m, arch)
+			r, err := Resolve(context.Background(), m, arch)
 			if err != nil {
 				t.Errorf("%s %s: %v", m.AppID, arch, err)
 				continue
 			}
-			t.Logf("%-24s %-5s %s", m.AppID, arch, u)
+			info, err := Probe(context.Background(), r.URL)
+			if err != nil {
+				t.Errorf("%s %s: probe: %v", m.AppID, arch, err)
+				continue
+			}
+			fp, reliable := Fingerprint(info)
+			t.Logf("%-18s %-5s version=%-12q reliable=%-5v %s\n%30s fingerprint %s", m.AppID, arch, Version(r, info), reliable, r.URL, "", fp)
 		}
 	}
 }

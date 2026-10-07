@@ -59,7 +59,8 @@ func writeTarGz(t *testing.T, entries ...entry) string {
 func extract(t *testing.T, src string) (string, error) {
 	t.Helper()
 	dest := t.TempDir()
-	return dest, Extract(src, dest)
+	_, err := Extract(src, dest, "app")
+	return dest, err
 }
 
 // The four layouts used by dopt-bash's tests/run.sh.
@@ -124,7 +125,7 @@ func TestTraversalRejected(t *testing.T) {
 		src := writeTarGz(t, file(name, "pwned"))
 		dest := filepath.Join(outside, "dest")
 		os.Mkdir(dest, 0o755)
-		if err := Extract(src, dest); err == nil || !strings.Contains(err.Error(), "unsafe path") {
+		if _, err := Extract(src, dest, "app"); err == nil || !strings.Contains(err.Error(), "unsafe path") {
 			t.Errorf("%s: err = %v, want unsafe path", name, err)
 		}
 		if _, err := os.Stat(filepath.Join(outside, "evil")); err == nil {
@@ -216,7 +217,7 @@ func TestNotGzipAndCorrupt(t *testing.T) {
 	if err := Valid(junk); err == nil {
 		t.Error("Valid(junk) = nil")
 	}
-	if _, err := extract(t, junk); err == nil || !strings.Contains(err.Error(), "gzip") {
+	if _, err := extract(t, junk); err == nil || !strings.Contains(err.Error(), "not a supported archive") {
 		t.Errorf("extract junk: %v", err)
 	}
 

@@ -101,6 +101,7 @@ func Remove(env Env, appID string, force bool) error {
 	if err := registry.Remove(l.RegistryDir, appID); err != nil {
 		u.Warn("Couldn't remove the registry entry: %v", err)
 	}
+	registry.RemoveRecipe(l.RegistryDir, appID)
 	u.OK("%s removed", name)
 	return nil
 }
