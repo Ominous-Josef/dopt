@@ -530,13 +530,14 @@ func (r *run) pickBinary() string {
 }
 
 // assertManaged refuses to modify anything but <opt dir>/<app_id> and its two staging siblings.
-func (r *run) assertManaged(p string) error {
+func (r *run) assertManaged(p string) error { return assertManaged(r.l, r.m.AppID, p) }
+
+func assertManaged(l layout.Layout, appID, p string) error {
 	target := linker.Resolve(p)
 	name := filepath.Base(target)
-	id := r.m.AppID
-	if filepath.Dir(target) != linker.Resolve(r.l.OptDir) ||
-		(name != id && name != "."+id+".dopt-new" && name != "."+id+".dopt-old") {
-		return fail(fmt.Sprintf("Safety abort: refusing to modify %s (outside dopt's folder %s).", target, r.l.OptDir))
+	if filepath.Dir(target) != linker.Resolve(l.OptDir) ||
+		(name != appID && name != "."+appID+".dopt-new" && name != "."+appID+".dopt-old") {
+		return fail(fmt.Sprintf("Safety abort: refusing to modify %s (outside dopt's folder %s).", target, l.OptDir))
 	}
 	return nil
 }

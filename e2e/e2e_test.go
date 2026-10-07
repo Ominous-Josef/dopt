@@ -293,3 +293,21 @@ func TestNothingInRealHome(t *testing.T) {
 		t.Error("an e2e test installed into the real ~/.local/opt")
 	}
 }
+
+func TestListAndRemove(t *testing.T) {
+	s := newSandbox(t)
+	s.run("", "list")
+	s.check("empty list", s.code == 0 && s.has("Nothing installed by dopt"))
+
+	s.run("y\nn\n", "install", "-m", s.manifest("m.json", ""), "-f", s.pkg("v1.tar.gz", "v1", "wrap"))
+	os.MkdirAll(s.opt("manual-app"), 0o755)
+	s.run("", "list")
+	s.check("list shows the app and other folders", s.code == 0 && s.has(appID) && s.has("dselftest") && s.has("manual-app"))
+
+	s.run("", "remove", "manual-app", "-i")
+	s.check("won't remove an unregistered folder", s.code == 1 && exists(s.opt("manual-app")))
+
+	s.run("y\n", "remove", appID)
+	s.check("remove", s.code == 0 && !exists(s.opt(appID)) && !exists(filepath.Join(s.root, "bin", "dselftest")) &&
+		!exists(filepath.Join(s.root, "applications", appID+".desktop")))
+}

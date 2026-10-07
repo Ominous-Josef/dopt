@@ -102,3 +102,12 @@ func (l Layout) BackupDir(appID string) string { return filepath.Join(l.OptDir, 
 func (l Layout) DesktopFile(appID string) string {
 	return filepath.Join(l.DesktopDir, appID+".desktop")
 }
+
+// View is Resolve for read-only commands (like `dopt list`): it skips the root checks.
+func View(global bool, home, testRoot string) (Layout, error) {
+	euid := 1
+	if global {
+		euid = 0
+	}
+	return Resolve(global, home, euid, testRoot)
+}
