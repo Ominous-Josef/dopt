@@ -32,7 +32,8 @@ Many good Linux applications and developer toolchains (Discord, Blender, Go, Neo
 * **Safe extraction.** Archive entries can't write outside the install folder, setuid bits are dropped, and hard links and symlinks are handled.
 * **Running apps.** Running instances are found and stopped before an update, then relaunched as you, with your Wayland or X11 session.
 * **Desktop integration.** dopt finds the app's icon and writes a validated `.desktop` launcher. CLI tools get none.
-* **Checksums.** `--sha256` verifies an archive before anything is installed.
+* **Checksums.** Downloads are verified against the SHA-256 their source publishes (GitHub's asset digest, a sums file, or the vendor's API). `--sha256` lets you supply one yourself.
+* **Several commands per app.** A toolchain can link all its tools (`go` and `gofmt`), not just one.
 * **Interactive mode.** No recipe? dopt asks for the details, pre-filled from the existing install when you update.
 * **Manage what you installed.** `dopt list` and `dopt remove`.
 * **Single static binary.** It doesn't need `curl`, `tar`, `xz`, `unzip` or `jq`.
@@ -226,6 +227,7 @@ A recipe is a JSON file. A recipe for a CLI toolchain that finds its latest vers
 | `default_url_x64` | String | Fixed download URL for x86_64. |
 | `default_url_arm64` | String | Fixed download URL for aarch64. |
 | `source` | Object | Finds the download URL dynamically (see below). Used instead of `default_url_*`. |
+| `binaries` | List | Extra commands to link, each `{"path": "bin/gofmt"}` or `{"pattern": "tool-*", "link_as": "tool"}`. `link_as` defaults to the file name. |
 
 Unknown fields produce a warning, so typos don't go unnoticed. `default_install_dir` from version 1 recipes is ignored, because apps always install into `<opt dir>/<app_id>`.
 
@@ -246,7 +248,7 @@ The first string result is the URL.
 }
 ```
 
-**`github`** takes an asset from the repository's latest release:
+**`github`** and **`gitlab`** take an asset from the repository's latest release. GitLab sources may set `host` for a self-hosted instance (default `https://gitlab.com`).
 
 ```json
 "source": {
@@ -261,6 +263,37 @@ How the asset is chosen:
 - **Patterns** can be substrings or globs. With a pattern, any matching asset can be picked, including binaries with no extension (`jq-linux-amd64`). Checksum and signature files are skipped.
 - **`asset_pattern`** applies to both architectures.
 - **No pattern:** dopt picks a Linux download whose name mentions the architecture, preferring `.tar.gz`, then the other archive types.
+
+```json
+"source": {
+  "type": "gitlab",
+  "repository": "gitlab-org/cli",
+  "asset_pattern_x64": "linux_amd64.tar.gz",
+  "asset_pattern_arm64": "linux_arm64.tar.gz",
+  "checksums": "checksums.txt"
+}
+```
+
+### Checksums
+
+Unless you pass `--sha256`, dopt verifies a download against the SHA-256 its source publishes. It uses the first one it finds:
+
+1. **`checksums`** (github/gitlab): a release asset listing SHA-256 sums, named in the recipe.
+2. **GitHub's asset digest**, which GitHub publishes for every release asset.
+3. **A sidecar file** named `<asset>.sha256` or `<asset>.sha256sum`.
+4. **A sums file** with a common name: `SHA256SUMS`, `sha256sum.txt`, `checksums.txt`, `*_checksums.txt`, …
+5. **`checksum_query`** (api): a jq query on the same JSON that returns either the hash or the URL of a checksum file.
+
+```json
+"checksum_query": ".[0].files[] | select(.os == $os and .arch == $goarch and .kind == \"archive\") | .sha256"
+```
+
+Sums files can be in GNU (`<hash>  <file>`), BSD (`SHA256 (<file>) = <hash>`) or single-hash format.
+- **Checksums dopt finds on its own** (2–4) are best-effort: if one can't be read or doesn't list the download, dopt warns and continues.
+- **A checksum the recipe asks for** (1 and 5) must verify, or nothing is installed.
+- **`"checksums": "none"`** turns checking off.
+
+A mismatch always stops the install, and the download is discarded.
 
 ---
 
@@ -308,7 +341,7 @@ DOPT_TEST_ROOT=$(mktemp -d) go run . install -m recipes/neovim.json -d
 ## Disclaimer & security responsibility
 
 > [!CAUTION]
-> **No signature verification:** dopt installs and runs software exactly as provided. It does not check signatures, only an optional SHA-256 checksum that you supply.
+> **No signature verification:** dopt installs and runs software exactly as provided. It checks SHA-256 checksums (published by the source, or supplied by you), which catch corrupted or swapped downloads, but it does not check signatures. A checksum served from the same place as the download can't protect against that place being compromised.
 >
 > In local mode dopt runs as you; with `--global` it runs as root. Either way:
 > - Only use URLs, recipes and archives you trust.
