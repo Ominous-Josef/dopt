@@ -6,8 +6,9 @@
 *.dylib
 
 # Built dopt executable
-dopt
+/dopt
 dopt-go
+/main
 
 # Test binary, built with `go test -c`
 *.test
