@@ -13,10 +13,12 @@ var DesktopDir = "/usr/share/applications"
 
 func CreateDesktopEntry(m manifest.Manifest, installDir string, binLink string, realBinary string) {
 	fmt.Println("[*] Scanning workspace assets for Application Desktop Graphics...")
-	
+
 	var iconPath string
 	filepath.WalkDir(installDir, func(path string, d os.DirEntry, err error) error {
-		if err != nil { return nil }
+		if err != nil {
+			return nil
+		}
 		if !d.IsDir() {
 			name := strings.ToLower(d.Name())
 			if strings.HasSuffix(name, ".png") || strings.HasSuffix(name, ".svg") {
@@ -29,7 +31,9 @@ func CreateDesktopEntry(m manifest.Manifest, installDir string, binLink string, 
 		return nil
 	})
 
-	if iconPath == "" { iconPath = "system-run" }
+	if iconPath == "" {
+		iconPath = "system-run"
+	}
 
 	execLine := binLink
 	if m.ExecFlags != "" {

@@ -11,18 +11,27 @@ import (
 
 func ExtractTarGz(tarPath, dest string) error {
 	f1, err := os.Open(tarPath)
-	if err != nil { return err }
+	if err != nil {
+		return err
+	}
 	gzr1, err := gzip.NewReader(f1)
-	if err != nil { f1.Close(); return err }
+	if err != nil {
+		f1.Close()
+		return err
+	}
 	tr1 := tar.NewReader(gzr1)
-	
+
 	var commonPrefix string
 	first := true
 	for {
 		hdr, err := tr1.Next()
-		if err == io.EOF || err != nil { break }
+		if err == io.EOF || err != nil {
+			break
+		}
 		parts := strings.Split(filepath.Clean(hdr.Name), "/")
-		if len(parts) == 0 || parts[0] == "" || parts[0] == "." { continue }
+		if len(parts) == 0 || parts[0] == "" || parts[0] == "." {
+			continue
+		}
 		if first {
 			commonPrefix = parts[0]
 			first = false
@@ -31,21 +40,29 @@ func ExtractTarGz(tarPath, dest string) error {
 		}
 	}
 	f1.Close()
-	
+
 	f2, err := os.Open(tarPath)
-	if err != nil { return err }
+	if err != nil {
+		return err
+	}
 	defer f2.Close()
 	gzr2, err := gzip.NewReader(f2)
-	if err != nil { return err }
+	if err != nil {
+		return err
+	}
 	defer gzr2.Close()
 	tr2 := tar.NewReader(gzr2)
-	
+
 	os.MkdirAll(dest, 0755)
-	
+
 	for {
 		header, err := tr2.Next()
-		if err == io.EOF { break }
-		if err != nil { return err }
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			return err
+		}
 
 		name := filepath.Clean(header.Name)
 		if commonPrefix != "" {
@@ -55,7 +72,7 @@ func ExtractTarGz(tarPath, dest string) error {
 				continue
 			}
 		}
-		
+
 		target := filepath.Join(dest, name)
 		switch header.Typeflag {
 		case tar.TypeDir:
