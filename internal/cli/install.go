@@ -56,8 +56,9 @@ func runInstall(o InstallOptions, u *ui.UI) error {
 		}
 	}
 
-	// App details: from the manifest, or asked by the wizard.
+	// 1. Which app: from the manifest, -a, or asked.
 	var m manifest.Manifest
+	appID := o.AppID
 	if o.Manifest != "" {
 		var warnings []string
 		if m, warnings, err = manifest.Load(o.Manifest); err != nil {
@@ -66,45 +67,67 @@ func runInstall(o InstallOptions, u *ui.UI) error {
 		for _, w := range warnings {
 			u.Warn("Manifest: %s", w)
 		}
-		if o.Symlink != "" {
-			m.SymlinkAs = o.Symlink
-		}
+		appID = m.AppID
 		req.ManifestPath = o.Manifest
-	} else {
-		appID := o.AppID
-		if appID == "" {
-			if appID, err = askAppID(u, l); err != nil {
-				return err
-			}
-		} else if err := names.Validate("App ID", appID); err != nil {
+	} else if appID == "" {
+		if appID, err = askAppID(u, l); err != nil {
 			return err
 		}
-		if m, err = wizard(u, l, appID, o.Symlink, ""); err != nil {
-			return err
-		}
-		req.Wizard = true
+	} else if err := names.Validate("App ID", appID); err != nil {
+		return err
 	}
-	req.Manifest = m
 
-	// The archive: a local file, or a download.
+	// 2. A system-wide copy exists: update it with sudo, or install a separate local copy.
+	localID, localName, err := globalChoice(u, l, appID, o, o.Manifest == "")
+	if err != nil {
+		return err
+	}
+	isLocalCopy := localID != appID
+	appID = localID
+
+	// 3. The archive: a local file, a download, or chosen from recent downloads.
+	file, url := o.File, o.URL
+	if file == "" && url == "" && !o.Download {
+		if o.Force {
+			return errors.New("no archive given. Pass -f <file>, -u <url> or -d")
+		}
+		if file, url, err = pickSource(u, downloadsDir(l, usr, euid == 0)); err != nil {
+			return err
+		}
+	}
 	switch {
-	case o.File != "":
-		path := expandHome(o.File, usr.Home)
+	case file != "":
+		path := expandHome(file, usr.Home)
 		if info, err := os.Stat(path); err != nil || !info.Mode().IsRegular() {
 			return fmt.Errorf("archive not found: %s", path)
 		}
 		req.Archive = path
-	case o.URL != "":
-		req.Download, req.URL = true, o.URL
-	case o.Download:
+	case url != "":
+		req.Download, req.URL = true, url
+	default: // -d
 		if o.Manifest == "" || !m.HasDownload(arch) {
 			return errors.New("no download URL. Pass -u <url>, or add default_url_x64/default_url_arm64 or a source to the manifest")
 		}
 		req.Download = true
-		req.Resolve = func(ctx context.Context) (string, error) { return source.Resolve(ctx, m, arch) }
-	default:
-		return errors.New("no archive given. Pass -f <file>, -u <url> or -d")
+		resolveFrom := m
+		req.Resolve = func(ctx context.Context) (string, error) { return source.Resolve(ctx, resolveFrom, arch) }
 	}
+
+	// 4. App details: the manifest's, or asked by the wizard.
+	if o.Manifest == "" {
+		if m, err = wizard(u, l, appID, o.Symlink, localName); err != nil {
+			return err
+		}
+		req.Wizard = true
+	}
+	m.AppID = appID
+	if o.Symlink != "" {
+		m.SymlinkAs = o.Symlink
+	}
+	if isLocalCopy && !strings.HasSuffix(m.Name, " (Local)") {
+		m.Name += " (Local)"
+	}
+	req.Manifest = m
 
 	cwd, err := os.Getwd()
 	if err != nil {

@@ -35,6 +35,8 @@ type InstallOptions struct {
 	Cleanup  bool
 	Force    bool
 	Global   bool
+
+	Args []string // the options as given, for re-running with sudo
 }
 
 var sha256Pattern = regexp.MustCompile(`^[0-9a-f]{64}$`)
@@ -116,7 +118,7 @@ func run(args []string, u *ui.UI) error {
 
 // parseInstall reads `dopt install` flags. Short and long forms share one variable.
 func parseInstall(args []string) (InstallOptions, error) {
-	var o InstallOptions
+	o := InstallOptions{Args: args}
 	var removedPath string
 	fs := flag.NewFlagSet("install", flag.ContinueOnError)
 	fs.SetOutput(io.Discard)

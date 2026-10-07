@@ -3,8 +3,10 @@ package cli
 import (
 	"errors"
 	"flag"
+	"reflect"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/Ominous-Josef/dopt/internal/install"
 	"github.com/Ominous-Josef/dopt/internal/ui"
@@ -19,7 +21,8 @@ func TestParseInstallAliases(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if short != long {
+	short.Args, long.Args = nil, nil
+	if !reflect.DeepEqual(short, long) {
 		t.Errorf("short %+v != long %+v", short, long)
 	}
 	if !short.Cleanup || !short.Force || !short.Global || short.Symlink != "cmd" {
@@ -98,5 +101,21 @@ func TestReport(t *testing.T) {
 	want := "[-] Owned.\n      remove it\n[-] bad flag\n    Run 'dopt help' for usage.\n[-] Archive not found: x.\n"
 	if errb.String() != want {
 		t.Errorf("stderr = %q, want %q", errb.String(), want)
+	}
+}
+
+func TestAgeText(t *testing.T) {
+	now := time.Date(2026, 10, 7, 12, 0, 0, 0, time.UTC)
+	cases := map[time.Duration]string{
+		5 * time.Minute:     "5 min ago",
+		3 * time.Hour:       "3 h ago",
+		2 * 24 * time.Hour:  "2 days ago",
+		21 * 24 * time.Hour: "3 weeks ago",
+		-1 * time.Hour:      "0 min ago",
+	}
+	for ago, want := range cases {
+		if got := ageText(now.Add(-ago), now); got != want {
+			t.Errorf("ageText(-%v) = %q, want %q", ago, got, want)
+		}
 	}
 }
